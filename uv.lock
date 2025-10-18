@@ -96,6 +96,18 @@ wheels = [
 ]
 
 [[package]]
+name = "mailtm-python"
+version = "0.1.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "requests" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/a4/7e/34e2e3c27fd54d9aa854f7cf3d2a0633df2297c5560cb774ac5bba780036/mailtm_python-0.1.0.tar.gz", hash = "sha256:4224dabe3aafc163aac96c7bb6d41268b495c09becbd00060b53d56ba9ca6775", size = 18626 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/ca/ae/b1b770b0010e289f8e999c820677b93a44bbbbd45568e8d761d1bde3e38e/mailtm_python-0.1.0-py3-none-any.whl", hash = "sha256:2d482ccd0d760b2ea16ff6a0b43402822a232a439405c0977f1f4b8027fe563e", size = 18759 },
+]
+
+[[package]]
 name = "markdown-it-py"
 version = "4.0.0"
 source = { registry = "https://pypi.org/simple" }
@@ -178,6 +190,7 @@ source = { editable = "." }
 dependencies = [
     { name = "beautifulsoup4" },
     { name = "click" },
+    { name = "mailtm-python" },
     { name = "pyjwt" },
     { name = "requests" },
     { name = "rich" },
@@ -187,6 +200,7 @@ dependencies = [
 requires-dist = [
     { name = "beautifulsoup4", specifier = ">=4.14.2" },
     { name = "click", specifier = ">=8.3.0" },
+    { name = "mailtm-python", specifier = ">=0.1.0" },
     { name = "pyjwt", specifier = ">=2.10.1" },
     { name = "requests", specifier = ">=2.32.5" },
     { name = "rich", specifier = ">=14.2.0" },

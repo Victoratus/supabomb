@@ -148,6 +148,13 @@ def enum(project_ref, anon_key, output, sample_size):
 
     console.print("[bold green]✓[/bold green] Connection successful")
 
+    # Check if we have a user session for authenticated queries
+    user_session = cache.get_user_session(credentials.project_ref)
+    access_token = user_session.get('access_token') if user_session else None
+
+    if access_token:
+        console.print(f"[dim]🔐 Found authenticated session for {user_session['email']}[/dim]")
+
     # Enumerate
     enumerator = SupabaseEnumerator(client)
 
@@ -156,8 +163,17 @@ def enum(project_ref, anon_key, output, sample_size):
         rpc_functions = enumerator.enumerate_rpc_functions()
         buckets = enumerator.enumerate_storage_buckets()
 
+    # If we have a user session, also get authenticated row counts
+    auth_counts = {}
+    if access_token:
+        with console.status("[bold green]Fetching authenticated row counts..."):
+            for table in tables:
+                if table.accessible:
+                    auth_count = client.count_table_rows_authenticated(table.name, access_token)
+                    auth_counts[table.name] = auth_count
+
     # Display results
-    _display_enumeration_results(tables, rpc_functions, buckets)
+    _display_enumeration_results(tables, rpc_functions, buckets, auth_counts if access_token else None)
 
     # Save to file if requested
     if output:
@@ -437,6 +453,227 @@ def cached(clear, remove):
     console.print(f"\n[dim]The most recent (#1) will be used by default[/dim]")
 
 
+@cli.command()
+@click.option('--project-ref', '-p', help='Supabase project reference (optional if cached)')
+@click.option('--anon-key', '-k', help='Supabase anonymous API key (optional if cached)')
+@click.option('--email', '-e', help='Email for registration (random if not provided)')
+@click.option('--password', help='Password for registration (random if not provided)')
+@click.option('--verify-email', is_flag=True, help='Automatically verify email using temporary email service')
+@click.option('--verbose', '-v', is_flag=True, help='Show detailed email verification debugging information')
+def signup(project_ref, anon_key, email, password, verify_email, verbose):
+    """Register a new user account on the Supabase instance.
+
+    This command will:
+    1. Check if signup is enabled
+    2. Register a new user (generates random email/password if not provided)
+    3. Save credentials to cache for authenticated queries
+
+    Examples:
+
+        supabomb signup  # Uses cached credentials, generates random user
+
+        supabomb signup -e test@example.com --password MyPass123
+
+        supabomb signup -p abc123xyz -k eyJ...
+    """
+    import random
+    import string
+
+    # Load credentials from cache if not provided
+    credentials = _get_credentials(project_ref, anon_key)
+    if not credentials:
+        console.print("[bold red]Error:[/bold red] No credentials provided and no cached credentials found.")
+        console.print("Run [bold cyan]supabomb discover[/bold cyan] first or provide --project-ref and --anon-key")
+        raise click.Abort()
+
+    console.print(f"\n[bold cyan]Checking signup configuration:[/bold cyan] {credentials.project_ref}")
+
+    client = SupabaseClient(credentials)
+
+    # Get auth settings
+    with console.status("[bold green]Fetching auth settings..."):
+        success, settings, error = client.get_auth_settings()
+
+    if not success:
+        console.print(f"[bold red]✗[/bold red] Failed to fetch settings: {error}")
+        raise click.Abort()
+
+    # Check if signup is disabled
+    if settings.get('disable_signup'):
+        console.print("[bold red]✗[/bold red] Signups are disabled on this instance")
+        raise click.Abort()
+
+    # Check if email auth is enabled
+    if not settings.get('external', {}).get('email'):
+        console.print("[bold red]✗[/bold red] Email authentication is disabled")
+        raise click.Abort()
+
+    # Check if email verification is required
+    mailer_autoconfirm = settings.get('mailer_autoconfirm', False)
+    temp_email_obj = None
+
+    if not mailer_autoconfirm:
+        if verify_email:
+            console.print("[bold cyan]ℹ[/bold cyan] Email verification required - using temporary email service")
+            from .utils import create_temp_email
+            try:
+                temp_email_obj = create_temp_email()
+                email = temp_email_obj.address
+                console.print(f"[dim]Created temporary email:[/dim] {email}")
+            except Exception as e:
+                console.print(f"[bold red]✗[/bold red] Failed to create temporary email:")
+                console.print(str(e))
+                raise click.Abort()
+        else:
+            console.print("[bold yellow]Warning:[/bold yellow] Email verification is required")
+            console.print("Signup will succeed but you won't get an access token immediately")
+            console.print("Use --verify-email flag to automatically verify using temp email service")
+            console.print("This tool works best with instances that have email autoconfirm enabled\n")
+
+    # Generate random credentials if not provided
+    if not email:
+        random_id = ''.join(random.choices(string.ascii_lowercase + string.digits, k=8))
+        email = f"test_{random_id}@supabomb.local"
+        console.print(f"[dim]Generated email:[/dim] {email}")
+
+    if not password:
+        password = ''.join(random.choices(string.ascii_letters + string.digits + '!@#$%', k=16))
+        console.print(f"[dim]Generated password:[/dim] {password}")
+
+    # Attempt signup
+    console.print(f"\n[bold cyan]Registering user:[/bold cyan] {email}")
+    with console.status("[bold green]Creating account..."):
+        success, response, error = client.signup_user(email, password)
+
+    if not success:
+        console.print(f"[bold red]✗[/bold red] Signup failed: {error}")
+        if response:
+            console.print(f"[dim]Error code:[/dim] {response.get('code')}")
+        raise click.Abort()
+
+    # Check if we got immediate access
+    if 'access_token' in response:
+        console.print("[bold green]✓[/bold green] Signup successful! (Email verification not required)")
+
+        # Save session to cache
+        cache.add_user_session(
+            project_ref=credentials.project_ref,
+            email=email,
+            password=password,
+            access_token=response['access_token'],
+            refresh_token=response['refresh_token'],
+            user_id=response['user']['id']
+        )
+
+        # Display user info
+        table = Table(show_header=False, box=box.ROUNDED)
+        table.add_column("Property", style="cyan")
+        table.add_column("Value", style="white")
+
+        table.add_row("User ID", response['user']['id'])
+        table.add_row("Email", email)
+        table.add_row("Password", password)
+        table.add_row("Role", response['user']['role'])
+        table.add_row("Created", response['user']['created_at'])
+
+        console.print()
+        console.print(table)
+        console.print(f"\n[dim]💾 Session saved to {cache.cache_file}[/dim]")
+        console.print("[bold green]You can now run enum/query/test commands with authenticated access[/bold green]")
+
+    else:
+        # Email verification required
+        if temp_email_obj:
+            # Use temp email to verify
+            console.print("[bold cyan]⏳[/bold cyan] Account created, waiting for verification email...")
+            console.print(f"User ID: {response.get('id')}")
+
+            from .utils import wait_for_verification_email
+
+            if verbose:
+                console.print("[dim]Checking for verification email every 3 seconds (verbose mode enabled)...[/dim]")
+            else:
+                console.print("[dim]Checking for verification email every 3 seconds...[/dim]")
+            verification_url = wait_for_verification_email(temp_email_obj, timeout=180, verbose=verbose)
+
+            if not verification_url:
+                console.print("[bold red]✗[/bold red] Timeout: No verification email received")
+                console.print("[dim]The account was created but couldn't be verified automatically[/dim]")
+                raise click.Abort()
+
+            console.print(f"[bold green]✓[/bold green] Verification email received!")
+            console.print(f"[dim]Verification URL:[/dim] {verification_url}")
+
+            # Follow the verification link (allow redirects to follow tracking URL)
+            import requests
+            with console.status("[bold green]Verifying email..."):
+                try:
+                    # Include API key in headers for Supabase verification endpoint
+                    verify_response = requests.get(
+                        verification_url,
+                        timeout=30,
+                        allow_redirects=True,
+                        headers={
+                            'User-Agent': 'Mozilla/5.0 (compatible; Supabomb/1.0)',
+                            'apikey': credentials.anon_key
+                        }
+                    )
+                    # Accept various success codes (200-399 are generally OK)
+                    if 200 <= verify_response.status_code < 400:
+                        console.print("[bold green]✓[/bold green] Email verified successfully!")
+                    else:
+                        console.print(f"[bold yellow]⚠[/bold yellow] Email verification may not have completed (status {verify_response.status_code})")
+                        console.print("[dim]Note: Supabase uses tracking redirects which can complicate automated verification[/dim]")
+                        console.print("[dim]Attempting login to check if verification succeeded...[/dim]")
+                except Exception as e:
+                    console.print(f"[bold yellow]⚠[/bold yellow] Verification request failed: {e}")
+                    console.print("[dim]Attempting login anyway...[/dim]")
+
+            # Now login to get access token
+            console.print("\n[bold cyan]Logging in to get access token...[/bold cyan]")
+            with console.status("[bold green]Authenticating..."):
+                success, login_response, error = client.login_user(email, password)
+
+            if not success:
+                console.print(f"[bold red]✗[/bold red] Login failed: {error}")
+                raise click.Abort()
+
+            console.print("[bold green]✓[/bold green] Login successful!")
+
+            # Save session to cache
+            cache.add_user_session(
+                project_ref=credentials.project_ref,
+                email=email,
+                password=password,
+                access_token=login_response['access_token'],
+                refresh_token=login_response['refresh_token'],
+                user_id=login_response['user']['id']
+            )
+
+            # Display user info
+            table = Table(show_header=False, box=box.ROUNDED)
+            table.add_column("Property", style="cyan")
+            table.add_column("Value", style="white")
+
+            table.add_row("User ID", login_response['user']['id'])
+            table.add_row("Email", email)
+            table.add_row("Password", password)
+            table.add_row("Role", login_response['user']['role'])
+            table.add_row("Created", login_response['user']['created_at'])
+
+            console.print()
+            console.print(table)
+            console.print(f"\n[dim]💾 Session saved to {cache.cache_file}[/dim]")
+            console.print("[bold green]You can now run enum/query/test commands with authenticated access[/bold green]")
+
+        else:
+            console.print("[bold yellow]⚠[/bold yellow] Account created but email verification required")
+            console.print(f"User ID: {response.get('id')}")
+            console.print("Check email for confirmation link (note: test emails won't receive actual emails)")
+            console.print("Use --verify-email flag to automatically verify using temp email service")
+            console.print("\n[dim]This account cannot be used for authenticated queries until verified[/dim]")
+
+
 def _get_credentials(project_ref: str = None, anon_key: str = None) -> Optional[SupabaseCredentials]:
     """Get credentials from arguments or cache.
 
@@ -487,24 +724,49 @@ def _display_discovery_result(result):
     console.print(table)
 
 
-def _display_enumeration_results(tables, rpc_functions, buckets):
-    """Display enumeration results."""
+def _display_enumeration_results(tables, rpc_functions, buckets, auth_counts=None):
+    """Display enumeration results.
+
+    Args:
+        tables: List of table info
+        rpc_functions: List of RPC functions
+        buckets: List of storage buckets
+        auth_counts: Optional dict of authenticated row counts per table
+    """
     console.print("\n[bold]Tables:[/bold]")
     table = Table(box=box.ROUNDED)
     table.add_column("Name", style="cyan")
     table.add_column("Accessible", style="green")
     table.add_column("Columns", style="yellow")
-    table.add_column("Row Count", style="magenta")
+    table.add_column("Anon Rows", style="magenta")
+
+    # Add authenticated column if we have auth data
+    if auth_counts is not None:
+        table.add_column("Auth Rows", style="blue")
 
     for t in tables:
-        table.add_row(
+        anon_count = str(t.row_count) if t.row_count is not None else "N/A"
+
+        row_data = [
             t.name,
             "✓" if t.accessible else "✗",
             str(len(t.columns)),
-            str(t.row_count) if t.row_count is not None else "N/A"
-        )
+            anon_count
+        ]
+
+        # Add authenticated count if available
+        if auth_counts is not None:
+            auth_count = auth_counts.get(t.name)
+            auth_count_str = str(auth_count) if auth_count is not None else "N/A"
+            row_data.append(auth_count_str)
+
+        table.add_row(*row_data)
 
     console.print(table)
+
+    # Show legend if we have both counts
+    if auth_counts is not None:
+        console.print("[dim]Anon Rows: accessible with anonymous key | Auth Rows: accessible when authenticated[/dim]")
 
     console.print("\n[bold]RPC Functions:[/bold]")
     rpc_table = Table(box=box.ROUNDED)

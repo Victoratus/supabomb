@@ -71,11 +71,14 @@ class CredentialCache:
             "url": credentials.url,
             "source": source,
             "discovered_at": datetime.now().isoformat(),
-            "last_used": datetime.now().isoformat()
+            "last_used": datetime.now().isoformat(),
+            "user_session": None  # Will be populated by add_user_session
         }
 
         if existing is not None:
-            # Update existing entry
+            # Update existing entry but preserve user_session if it exists
+            old_session = cache["discoveries"][existing].get("user_session")
+            discovery_entry["user_session"] = old_session
             cache["discoveries"][existing] = discovery_entry
         else:
             # Add new entry
@@ -85,6 +88,54 @@ class CredentialCache:
         cache["discoveries"].sort(key=lambda x: x.get("last_used", ""), reverse=True)
 
         self.save(cache)
+
+    def add_user_session(self, project_ref: str, email: str, password: str,
+                        access_token: str, refresh_token: str, user_id: str) -> None:
+        """Add user session to a project.
+
+        Args:
+            project_ref: Project reference
+            email: User email
+            password: User password (stored for re-authentication)
+            access_token: JWT access token
+            refresh_token: Refresh token
+            user_id: User ID
+        """
+        cache = self.load()
+
+        # Find the project
+        for disc in cache["discoveries"]:
+            if disc["project_ref"] == project_ref:
+                disc["user_session"] = {
+                    "email": email,
+                    "password": password,  # Store for automatic re-login
+                    "access_token": access_token,
+                    "refresh_token": refresh_token,
+                    "user_id": user_id,
+                    "created_at": datetime.now().isoformat(),
+                    "last_used": datetime.now().isoformat()
+                }
+                disc["last_used"] = datetime.now().isoformat()
+                break
+
+        self.save(cache)
+
+    def get_user_session(self, project_ref: str) -> Optional[Dict[str, str]]:
+        """Get user session for a project.
+
+        Args:
+            project_ref: Project reference
+
+        Returns:
+            User session dict or None
+        """
+        cache = self.load()
+
+        for disc in cache["discoveries"]:
+            if disc["project_ref"] == project_ref:
+                return disc.get("user_session")
+
+        return None
 
     def get_latest(self) -> Optional[SupabaseCredentials]:
         """Get most recently used credentials.

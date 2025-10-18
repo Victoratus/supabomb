@@ -22,10 +22,17 @@ A powerful CLI tool for discovering and pentesting Supabase instances in authori
 
 - **Security Testing**: Identify misconfigurations
   - Test Row Level Security (RLS) policies
+  - Compare anonymous vs authenticated data access
   - Check authentication configuration
   - Validate RPC function access controls
   - Test storage bucket permissions
   - Verify edge function JWT requirements
+
+- **User Registration**: Test with authenticated access
+  - Automatic random user generation
+  - Support for email verification (with temporary emails)
+  - Cached sessions for authenticated queries
+  - Side-by-side comparison of anon vs auth row counts
 
 - **Data Export**: Query and export data
   - Query tables with anonymous credentials
@@ -112,6 +119,42 @@ supabomb check-jwt -e function1 -e function2
 supabomb check-jwt --project-ref abc123xyz --anon-key "eyJ..." -e function1
 ```
 
+### User Registration and Authentication
+
+Register users to test RLS policies with authenticated access:
+
+```bash
+# Basic signup (generates random email/password)
+supabomb signup
+
+# Signup with specific credentials
+supabomb signup -e test@example.com --password MyPass123
+
+# Automatic email verification (when required)
+supabomb signup --verify-email
+# This will:
+# 1. Create a temporary email address
+# 2. Register the user
+# 3. Wait for verification email
+# 4. Automatically verify the account
+# 5. Login and save session to cache
+
+# View full email contents during verification (debugging)
+supabomb signup --verify-email --verbose
+# Shows:
+# - Email check attempts
+# - Full HTML and text content
+# - All links found in email
+# - Link extraction process
+```
+
+Once registered, authenticated row counts will be shown in `enum` command:
+
+```bash
+supabomb enum
+# Shows both "Anon Rows" and "Auth Rows" columns when session exists
+```
+
 ### Manage Cached Credentials
 
 ```bash
@@ -160,5 +203,6 @@ supabomb/
 - beautifulsoup4: HTML parsing
 - rich: Terminal formatting
 - pyjwt: JWT token handling
+- mailtm-python: Temporary email for verification (mail.tm)
 
 Made for security researchers, by security researchers.

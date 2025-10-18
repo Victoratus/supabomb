@@ -364,3 +364,162 @@ class SupabaseClient:
 
         except Exception as e:
             return False, str(e)
+
+    def get_auth_settings(self) -> Tuple[bool, Optional[Dict[str, Any]], Optional[str]]:
+        """Get authentication settings.
+
+        Returns:
+            Tuple of (success, settings_dict, error_message)
+        """
+        try:
+            response = self.session.get(
+                f"{self.auth_url}/settings",
+                timeout=self.timeout
+            )
+
+            if response.status_code == 200:
+                return True, response.json(), None
+            else:
+                return False, None, f"Status {response.status_code}"
+
+        except Exception as e:
+            return False, None, str(e)
+
+    def signup_user(self, email: str, password: str) -> Tuple[bool, Optional[Dict], Optional[str]]:
+        """Sign up a new user.
+
+        Args:
+            email: User email
+            password: User password
+
+        Returns:
+            Tuple of (success, response_data, error_message)
+        """
+        try:
+            response = self.session.post(
+                f"{self.auth_url}/signup",
+                json={
+                    "email": email,
+                    "password": password
+                },
+                timeout=self.timeout
+            )
+
+            if response.status_code == 200:
+                return True, response.json(), None
+            else:
+                data = response.json() if response.text else {}
+                error_msg = data.get('error_description') or data.get('msg') or f"Status {response.status_code}"
+                return False, data, error_msg
+
+        except Exception as e:
+            return False, None, str(e)
+
+    def login_user(self, email: str, password: str) -> Tuple[bool, Optional[Dict], Optional[str]]:
+        """Log in a user.
+
+        Args:
+            email: User email
+            password: User password
+
+        Returns:
+            Tuple of (success, response_data, error_message)
+        """
+        try:
+            response = self.session.post(
+                f"{self.auth_url}/token?grant_type=password",
+                json={
+                    "email": email,
+                    "password": password
+                },
+                timeout=self.timeout
+            )
+
+            if response.status_code == 200:
+                return True, response.json(), None
+            else:
+                data = response.json() if response.text else {}
+                error_msg = data.get('error_description') or data.get('msg') or f"Status {response.status_code}"
+                return False, data, error_msg
+
+        except Exception as e:
+            return False, None, str(e)
+
+    def query_table_authenticated(self, table_name: str, access_token: str,
+                                  limit: int = 10, select: str = "*") -> Tuple[bool, Optional[List[Dict]], Optional[str]]:
+        """Query a table with authenticated user credentials.
+
+        Args:
+            table_name: Name of table to query
+            access_token: User JWT access token
+            limit: Maximum rows to return
+            select: Columns to select
+
+        Returns:
+            Tuple of (success, data, error_message)
+        """
+        try:
+            # Create temporary session with user JWT
+            temp_session = requests.Session()
+            temp_session.headers.update({
+                'apikey': self.credentials.anon_key,
+                'Authorization': f'Bearer {access_token}',
+                'Content-Type': 'application/json'
+            })
+
+            response = temp_session.get(
+                f"{self.rest_url}/{table_name}",
+                params={'select': select, 'limit': limit},
+                timeout=self.timeout
+            )
+
+            if response.status_code == 200:
+                return True, response.json(), None
+            elif response.status_code == 403:
+                return False, None, "Access forbidden (RLS blocking access)"
+            elif response.status_code == 404:
+                return False, None, "Table not found or no permissions"
+            else:
+                code, message = parse_postgrest_error(response.text)
+                return False, None, message or f"Error {response.status_code}"
+
+        except Exception as e:
+            return False, None, str(e)
+
+    def count_table_rows_authenticated(self, table_name: str, access_token: str) -> Optional[int]:
+        """Count rows in a table with authenticated user.
+
+        Args:
+            table_name: Name of table
+            access_token: User JWT access token
+
+        Returns:
+            Row count or None if error
+        """
+        try:
+            # Create temporary session with user JWT
+            temp_session = requests.Session()
+            temp_session.headers.update({
+                'apikey': self.credentials.anon_key,
+                'Authorization': f'Bearer {access_token}',
+                'Content-Type': 'application/json'
+            })
+
+            response = temp_session.get(
+                f"{self.rest_url}/{table_name}",
+                params={'select': 'count'},
+                headers={'Prefer': 'count=exact'},
+                timeout=self.timeout
+            )
+
+            # PostgREST returns 206 (Partial Content) with count
+            if response.status_code in [200, 206]:
+                # Count is in Content-Range header
+                content_range = response.headers.get('Content-Range', '')
+                if '/' in content_range:
+                    count_str = content_range.split('/')[-1].strip()
+                    if count_str.isdigit():
+                        return int(count_str)
+            return None
+        except Exception:
+            return None
