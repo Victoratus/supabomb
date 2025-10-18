@@ -2,6 +2,8 @@
 import requests
 from typing import Optional, Dict, Any, List, Tuple
 import json
+import base64
+import time
 from .models import SupabaseCredentials, TableInfo, RPCFunction, EdgeFunction
 from .utils import parse_postgrest_error
 
@@ -449,6 +451,57 @@ class SupabaseClient:
         except Exception as e:
             return False, None, str(e)
 
+    def is_token_expired(self, access_token: str) -> bool:
+        """Check if a JWT token is expired.
+
+        Args:
+            access_token: JWT access token
+
+        Returns:
+            True if expired, False otherwise
+        """
+        try:
+            # JWT format: header.payload.signature
+            parts = access_token.split('.')
+            if len(parts) != 3:
+                return True
+
+            # Decode payload (add padding if needed)
+            payload = parts[1]
+            padding = 4 - len(payload) % 4
+            if padding != 4:
+                payload += '=' * padding
+
+            decoded = base64.urlsafe_b64decode(payload)
+            payload_data = json.loads(decoded)
+
+            # Check expiration time
+            exp = payload_data.get('exp')
+            if not exp:
+                return False
+
+            # Add 60 second buffer to refresh before actual expiration
+            return time.time() > (exp - 60)
+
+        except Exception:
+            # If we can't decode, assume expired
+            return True
+
+    def refresh_token(self, email: str, password: str) -> Tuple[bool, Optional[str], Optional[str]]:
+        """Refresh an expired token by logging in again.
+
+        Args:
+            email: User email
+            password: User password
+
+        Returns:
+            Tuple of (success, new_access_token, error_message)
+        """
+        success, response, error = self.login_user(email, password)
+        if success and response:
+            return True, response.get('access_token'), None
+        return False, None, error
+
     def query_table_authenticated(self, table_name: str, access_token: str,
                                   limit: int = 10, select: str = "*") -> Tuple[bool, Optional[List[Dict]], Optional[str]]:
         """Query a table with authenticated user credentials.
@@ -531,3 +584,218 @@ class SupabaseClient:
             return None
         except Exception:
             return None
+
+    def test_insert(self, table_name: str, data: Dict[str, Any]) -> Tuple[bool, Optional[Dict], Optional[str]]:
+        """Test if anonymous user can insert data into a table.
+
+        Args:
+            table_name: Name of table to test
+            data: Data to insert
+
+        Returns:
+            Tuple of (success, inserted_data, error_message)
+        """
+        try:
+            response = self.session.post(
+                f"{self.rest_url}/{table_name}",
+                json=data,
+                headers={'Prefer': 'return=representation'},
+                timeout=self.timeout
+            )
+
+            if response.status_code == 201:
+                return True, response.json(), None
+            elif response.status_code == 403:
+                return False, None, "Insert forbidden (RLS blocking access)"
+            elif response.status_code == 404:
+                return False, None, "Table not found"
+            else:
+                code, message = parse_postgrest_error(response.text)
+                return False, None, message or f"Error {response.status_code}"
+
+        except Exception as e:
+            return False, None, str(e)
+
+    def test_insert_authenticated(self, table_name: str, access_token: str,
+                                   data: Dict[str, Any]) -> Tuple[bool, Optional[Dict], Optional[str]]:
+        """Test if authenticated user can insert data into a table.
+
+        Args:
+            table_name: Name of table to test
+            access_token: User JWT access token
+            data: Data to insert
+
+        Returns:
+            Tuple of (success, inserted_data, error_message)
+        """
+        try:
+            temp_session = requests.Session()
+            temp_session.headers.update({
+                'apikey': self.credentials.anon_key,
+                'Authorization': f'Bearer {access_token}',
+                'Content-Type': 'application/json'
+            })
+
+            response = temp_session.post(
+                f"{self.rest_url}/{table_name}",
+                json=data,
+                headers={'Prefer': 'return=representation'},
+                timeout=self.timeout
+            )
+
+            if response.status_code == 201:
+                return True, response.json(), None
+            elif response.status_code == 403:
+                return False, None, "Insert forbidden (RLS blocking access)"
+            elif response.status_code == 404:
+                return False, None, "Table not found"
+            else:
+                code, message = parse_postgrest_error(response.text)
+                return False, None, message or f"Error {response.status_code}"
+
+        except Exception as e:
+            return False, None, str(e)
+
+    def test_delete(self, table_name: str, match_filter: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
+        """Test if anonymous user can delete data from a table.
+
+        Args:
+            table_name: Name of table to test
+            match_filter: Filter to identify rows to delete (e.g., {'id': 'eq.123'})
+
+        Returns:
+            Tuple of (success, error_message)
+        """
+        try:
+            response = self.session.delete(
+                f"{self.rest_url}/{table_name}",
+                params=match_filter,
+                timeout=self.timeout
+            )
+
+            if response.status_code in [200, 204]:
+                return True, None
+            elif response.status_code == 403:
+                return False, "Delete forbidden (RLS blocking access)"
+            elif response.status_code == 404:
+                return False, "Table not found or no matching rows"
+            else:
+                code, message = parse_postgrest_error(response.text)
+                return False, message or f"Error {response.status_code}"
+
+        except Exception as e:
+            return False, str(e)
+
+    def test_delete_authenticated(self, table_name: str, access_token: str,
+                                   match_filter: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
+        """Test if authenticated user can delete data from a table.
+
+        Args:
+            table_name: Name of table to test
+            access_token: User JWT access token
+            match_filter: Filter to identify rows to delete (e.g., {'id': 'eq.123'})
+
+        Returns:
+            Tuple of (success, error_message)
+        """
+        try:
+            temp_session = requests.Session()
+            temp_session.headers.update({
+                'apikey': self.credentials.anon_key,
+                'Authorization': f'Bearer {access_token}',
+                'Content-Type': 'application/json'
+            })
+
+            response = temp_session.delete(
+                f"{self.rest_url}/{table_name}",
+                params=match_filter,
+                timeout=self.timeout
+            )
+
+            if response.status_code in [200, 204]:
+                return True, None
+            elif response.status_code == 403:
+                return False, "Delete forbidden (RLS blocking access)"
+            elif response.status_code == 404:
+                return False, "Table not found or no matching rows"
+            else:
+                code, message = parse_postgrest_error(response.text)
+                return False, message or f"Error {response.status_code}"
+
+        except Exception as e:
+            return False, str(e)
+
+    def test_update(self, table_name: str, match_filter: Dict[str, Any],
+                    data: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
+        """Test if anonymous user can update data in a table.
+
+        Args:
+            table_name: Name of table to test
+            match_filter: Filter to identify rows to update (e.g., {'id': 'eq.123'})
+            data: Data to update
+
+        Returns:
+            Tuple of (success, error_message)
+        """
+        try:
+            response = self.session.patch(
+                f"{self.rest_url}/{table_name}",
+                params=match_filter,
+                json=data,
+                timeout=self.timeout
+            )
+
+            if response.status_code in [200, 204]:
+                return True, None
+            elif response.status_code == 403:
+                return False, "Update forbidden (RLS blocking access)"
+            elif response.status_code == 404:
+                return False, "Table not found or no matching rows"
+            else:
+                code, message = parse_postgrest_error(response.text)
+                return False, message or f"Error {response.status_code}"
+
+        except Exception as e:
+            return False, str(e)
+
+    def test_update_authenticated(self, table_name: str, access_token: str,
+                                   match_filter: Dict[str, Any],
+                                   data: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
+        """Test if authenticated user can update data in a table.
+
+        Args:
+            table_name: Name of table to test
+            access_token: User JWT access token
+            match_filter: Filter to identify rows to update (e.g., {'id': 'eq.123'})
+            data: Data to update
+
+        Returns:
+            Tuple of (success, error_message)
+        """
+        try:
+            temp_session = requests.Session()
+            temp_session.headers.update({
+                'apikey': self.credentials.anon_key,
+                'Authorization': f'Bearer {access_token}',
+                'Content-Type': 'application/json'
+            })
+
+            response = temp_session.patch(
+                f"{self.rest_url}/{table_name}",
+                params=match_filter,
+                json=data,
+                timeout=self.timeout
+            )
+
+            if response.status_code in [200, 204]:
+                return True, None
+            elif response.status_code == 403:
+                return False, "Update forbidden (RLS blocking access)"
+            elif response.status_code == 404:
+                return False, "Table not found or no matching rows"
+            else:
+                code, message = parse_postgrest_error(response.text)
+                return False, message or f"Error {response.status_code}"
+
+        except Exception as e:
+            return False, str(e)

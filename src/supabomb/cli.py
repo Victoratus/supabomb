@@ -118,7 +118,8 @@ def discover(url, file, har, output):
 @click.option('--anon-key', '-k', help='Supabase anonymous API key (optional if cached)')
 @click.option('--output', '-o', help='Output file for results (JSON)')
 @click.option('--sample-size', '-s', default=5, help='Number of sample rows per table')
-def enum(project_ref, anon_key, output, sample_size):
+@click.option('--test-write', is_flag=True, help='Test INSERT/UPDATE/DELETE permissions on tables')
+def enum(project_ref, anon_key, output, sample_size, test_write):
     """Enumerate Supabase endpoints, tables, and RPC functions.
 
     Examples:
@@ -128,6 +129,8 @@ def enum(project_ref, anon_key, output, sample_size):
         supabomb enum  # Uses cached credentials
 
         supabomb enum -p abc123xyz -k eyJ... --sample-size 10 -o results.json
+
+        supabomb enum --test-write  # Also test write permissions
     """
     # Load credentials from cache if not provided
     credentials = _get_credentials(project_ref, anon_key)
@@ -154,6 +157,10 @@ def enum(project_ref, anon_key, output, sample_size):
 
     if access_token:
         console.print(f"[dim]🔐 Found authenticated session for {user_session['email']}[/dim]")
+        # Ensure token is valid and refresh if needed
+        access_token = _ensure_valid_token(client, credentials, access_token)
+        if not access_token:
+            console.print("[yellow]⚠[/yellow] Continuing without authentication")
 
     # Enumerate
     enumerator = SupabaseEnumerator(client)
@@ -172,24 +179,172 @@ def enum(project_ref, anon_key, output, sample_size):
                     auth_count = client.count_table_rows_authenticated(table.name, access_token)
                     auth_counts[table.name] = auth_count
 
+    # Test write permissions if requested
+    write_perms = {}
+    if test_write:
+        import uuid
+        console.print(f"\n[bold cyan]Testing write permissions...[/bold cyan]")
+
+        for table in tables:
+            console.print(f"[dim]Testing {table.name}...[/dim]")
+
+            # Use sample data from table enumeration as template
+            test_id = str(uuid.uuid4())
+            test_data = {}
+
+            if table.sample_data and len(table.sample_data) > 0:
+                # Use the first row as template and modify it
+                template = table.sample_data[0]
+
+                for key, value in template.items():
+                    # Identify ID fields (primary keys or foreign keys)
+                    is_id_field = any(id_pattern in key.lower() for id_pattern in ['id', 'uuid', '_id', 'pk'])
+
+                    if is_id_field and key in ['id', 'uuid', 'pk']:
+                        # Primary key - generate new UUID
+                        test_data[key] = test_id
+                    elif is_id_field:
+                        # Foreign key - keep original value to maintain referential integrity
+                        test_data[key] = value
+                    elif isinstance(value, str):
+                        # Check if it's a timestamp/date field
+                        is_timestamp = any(pattern in key.lower() for pattern in ['created', 'updated', 'timestamp', '_at', 'date', 'time'])
+                        is_timestamp_value = value and ('T' in value or '-' in value) and len(value) > 10
+
+                        if is_timestamp or is_timestamp_value:
+                            # Keep timestamp fields unchanged
+                            test_data[key] = value
+                        else:
+                            # String field - modify last character
+                            if len(value) > 0:
+                                test_data[key] = value[:-1] + 'X' if value[-1] != 'X' else value[:-1] + 'Y'
+                            else:
+                                test_data[key] = 'supabomb_test'
+                    elif isinstance(value, (int, float)):
+                        # Numeric field - slightly modify
+                        test_data[key] = value + 1
+                    elif isinstance(value, bool):
+                        # Boolean field - flip it
+                        test_data[key] = not value
+                    elif value is None:
+                        # Null field - keep as None
+                        test_data[key] = None
+                    else:
+                        # Other types - keep original
+                        test_data[key] = value
+            else:
+                # No sample data - try minimal insert with just ID
+                columns = client.get_table_columns(table.name)
+                for col in ['id', 'uuid', '_id', 'pk']:
+                    if col in columns:
+                        test_data[col] = test_id
+                        break
+
+            # Test INSERT
+            if access_token:
+                insert_success, inserted_data, insert_error = client.test_insert_authenticated(
+                    table.name, access_token, test_data
+                )
+            else:
+                insert_success, inserted_data, insert_error = client.test_insert(table.name, test_data)
+
+            update_success = False
+            delete_success = False
+
+            if insert_success and inserted_data:
+                # Extract ID for update/delete
+                if isinstance(inserted_data, list) and len(inserted_data) > 0:
+                    inserted_row = inserted_data[0]
+                else:
+                    inserted_row = inserted_data
+
+                # Find ID field
+                actual_id = None
+                found_id_field = None
+                for id_field in ['id', 'uuid', '_id', 'pk'] + list(inserted_row.keys()):
+                    if id_field in inserted_row:
+                        actual_id = inserted_row[id_field]
+                        found_id_field = id_field
+                        break
+
+                if actual_id and found_id_field:
+                    match_filter = {found_id_field: f'eq.{actual_id}'}
+
+                    # Test UPDATE - modify an existing field
+                    update_data = {}
+                    for key, value in inserted_row.items():
+                        # Find a non-ID string field to update
+                        if isinstance(value, str) and key not in [found_id_field] and not any(id_pattern in key.lower() for id_pattern in ['id', 'uuid', '_id', 'pk']):
+                            is_timestamp = any(pattern in key.lower() for pattern in ['created', 'updated', 'timestamp', '_at', 'date', 'time'])
+                            if not is_timestamp:
+                                update_data[key] = 'supabomb_updated_' + test_id[:8]
+                                break
+
+                    if not update_data:
+                        for key, value in inserted_row.items():
+                            if isinstance(value, (int, float)) and key not in [found_id_field]:
+                                update_data[key] = value + 999
+                                break
+
+                    if update_data:
+                        if access_token:
+                            update_success, _ = client.test_update_authenticated(
+                                table.name, access_token, match_filter, update_data
+                            )
+                        else:
+                            update_success, _ = client.test_update(table.name, match_filter, update_data)
+                    else:
+                        update_success = False
+
+                    # Test DELETE (cleanup)
+                    if access_token:
+                        delete_success, delete_error = client.test_delete_authenticated(
+                            table.name, access_token, match_filter
+                        )
+                    else:
+                        delete_success, delete_error = client.test_delete(table.name, match_filter)
+
+            # Categorize insert status
+            if insert_success:
+                insert_status = 'allowed'
+            elif insert_error:
+                is_rls_block = any(x in insert_error.lower() for x in ['row-level security', 'rls', 'forbidden', 'permission denied'])
+                insert_status = 'denied' if is_rls_block else 'possible'
+            else:
+                insert_status = 'denied'
+
+            write_perms[table.name] = {
+                'insert': insert_status,
+                'update': 'allowed' if update_success else 'denied',
+                'delete': 'allowed' if delete_success else 'denied'
+            }
+
     # Display results
-    _display_enumeration_results(tables, rpc_functions, buckets, auth_counts if access_token else None)
+    _display_enumeration_results(tables, rpc_functions, buckets,
+                                 auth_counts if access_token else None,
+                                 write_perms if test_write else None)
 
     # Save to file if requested
     if output:
+        table_data = []
+        for t in tables:
+            table_info = {
+                'name': t.name,
+                'columns': t.columns,
+                'accessible': t.accessible,
+                'row_count': t.row_count,
+                'sample_data': t.sample_data
+            }
+            # Add write permissions if tested
+            if test_write and t.name in write_perms:
+                table_info['write_permissions'] = write_perms[t.name]
+
+            table_data.append(table_info)
+
         results = {
-            'project_ref': project_ref,
-            'url': url,
-            'tables': [
-                {
-                    'name': t.name,
-                    'columns': t.columns,
-                    'accessible': t.accessible,
-                    'row_count': t.row_count,
-                    'sample_data': t.sample_data
-                }
-                for t in tables
-            ],
+            'project_ref': credentials.project_ref,
+            'url': credentials.url,
+            'tables': table_data,
             'rpc_functions': [
                 {
                     'name': f.name,
@@ -248,8 +403,11 @@ def query(project_ref, anon_key, table, limit, output, format, use_anon):
         if user_session:
             access_token = user_session.get('access_token')
             if access_token:
-                auth_mode = "authenticated"
-                console.print(f"[dim]🔐 Using authenticated session: {user_session['email']}[/dim]")
+                # Ensure token is valid and refresh if needed
+                access_token = _ensure_valid_token(client, credentials, access_token)
+                if access_token:
+                    auth_mode = "authenticated"
+                    console.print(f"[dim]🔐 Using authenticated session: {user_session['email']}[/dim]")
 
     console.print(f"[bold cyan]Querying table:[/bold cyan] {table} [dim]({auth_mode})[/dim]")
 
@@ -339,8 +497,11 @@ def dump(project_ref, anon_key, output, use_anon):
         if user_session:
             access_token = user_session.get('access_token')
             if access_token:
-                auth_mode = "authenticated"
-                console.print(f"[dim]🔐 Using authenticated session: {user_session['email']}[/dim]")
+                # Ensure token is valid and refresh if needed
+                access_token = _ensure_valid_token(client, credentials, access_token)
+                if access_token:
+                    auth_mode = "authenticated"
+                    console.print(f"[dim]🔐 Using authenticated session: {user_session['email']}[/dim]")
 
     console.print(f"[bold cyan]Mode:[/bold cyan] {auth_mode}\n")
 
@@ -468,6 +629,291 @@ def test(project_ref, anon_key, edge_functions, output):
             ]
         })
         console.print(f"\n[bold green]Report saved to:[/bold green] {output}")
+
+
+@cli.command()
+@click.option('--project-ref', '-p', help='Supabase project reference (optional if cached)')
+@click.option('--anon-key', '-k', help='Supabase anonymous API key (optional if cached)')
+@click.option('--table', '-t', help='Specific table to test (optional, tests all tables if not provided)')
+@click.option('--use-anon', is_flag=True, help='Force anonymous query (ignore authenticated session)')
+def test_write(project_ref, anon_key, table, use_anon):
+    """Test data manipulation (INSERT/UPDATE/DELETE) permissions on tables.
+
+    This command will attempt to:
+    1. INSERT a test row into each table
+    2. UPDATE the inserted row (if insert succeeded)
+    3. DELETE the row (to clean up)
+
+    This helps identify which tables allow write operations and what level of
+    data manipulation is permitted.
+
+    By default, uses authenticated session if available, otherwise uses anonymous key.
+    Use --use-anon to force anonymous testing.
+
+    Examples:
+
+        supabomb test-write  # Test all tables with auth if available
+
+        supabomb test-write --use-anon  # Test all tables anonymously
+
+        supabomb test-write -t users  # Test specific table
+
+        supabomb test-write -p abc123xyz -k eyJ... -t posts
+    """
+    import uuid
+
+    # Load credentials from cache if not provided
+    credentials = _get_credentials(project_ref, anon_key)
+    if not credentials:
+        console.print("[bold red]Error:[/bold red] No credentials provided and no cached credentials found.")
+        console.print("Run [bold cyan]supabomb discover[/bold cyan] first or provide --project-ref and --anon-key")
+        raise click.Abort()
+
+    console.print(f"\n[bold cyan]Testing write permissions:[/bold cyan] {credentials.project_ref}")
+
+    client = SupabaseClient(credentials)
+
+    # Test connection
+    success, error = client.test_connection()
+    if not success:
+        console.print(f"[bold red]✗[/bold red] Connection failed: {error}")
+        raise click.Abort()
+
+    console.print("[bold green]✓[/bold green] Connection successful")
+
+    # Check for authenticated session (unless --use-anon is specified)
+    access_token = None
+    auth_mode = "anonymous"
+
+    if not use_anon:
+        user_session = cache.get_user_session(credentials.project_ref)
+        if user_session:
+            access_token = user_session.get('access_token')
+            if access_token:
+                # Ensure token is valid and refresh if needed
+                access_token = _ensure_valid_token(client, credentials, access_token)
+                if access_token:
+                    auth_mode = "authenticated"
+                    console.print(f"[dim]🔐 Using authenticated session: {user_session['email']}[/dim]")
+
+    console.print(f"[bold cyan]Mode:[/bold cyan] {auth_mode}\n")
+
+    # Get tables to test
+    if table:
+        tables_to_test = [table]
+    else:
+        with console.status("[bold green]Discovering tables..."):
+            tables_to_test = client.list_tables()
+
+    if not tables_to_test:
+        console.print("[bold yellow]No tables found[/bold yellow]")
+        return
+
+    console.print(f"[bold green]✓[/bold green] Testing {len(tables_to_test)} table(s)\n")
+
+    # Results table
+    results_table = Table(title="Write Permission Test Results", box=box.ROUNDED)
+    results_table.add_column("Table", style="cyan")
+    results_table.add_column("INSERT", style="yellow")
+    results_table.add_column("UPDATE", style="blue")
+    results_table.add_column("DELETE", style="magenta")
+    results_table.add_column("Details", style="white")
+
+    for table_name in tables_to_test:
+        console.print(f"[dim]Testing {table_name}...[/dim]")
+
+        # Try to get sample data to use as template
+        if access_token:
+            success, sample_data, error = client.query_table_authenticated(table_name, access_token, limit=1)
+        else:
+            success, sample_data, error = client.query_table(table_name, limit=1)
+
+        test_id = str(uuid.uuid4())
+        test_data = {}
+
+        if success and sample_data and len(sample_data) > 0:
+            # Use the first row as template and modify it
+            template = sample_data[0]
+
+            for key, value in template.items():
+                # Identify ID fields (primary keys or foreign keys)
+                is_id_field = any(id_pattern in key.lower() for id_pattern in ['id', 'uuid', '_id', 'pk'])
+
+                if is_id_field and key in ['id', 'uuid', 'pk']:
+                    # Primary key - generate new UUID
+                    test_data[key] = test_id
+                elif is_id_field:
+                    # Foreign key - keep original value to maintain referential integrity
+                    test_data[key] = value
+                elif isinstance(value, str):
+                    # Check if it's a timestamp/date field
+                    is_timestamp = any(pattern in key.lower() for pattern in ['created', 'updated', 'timestamp', '_at', 'date', 'time'])
+                    is_timestamp_value = value and ('T' in value or '-' in value) and len(value) > 10
+
+                    if is_timestamp or is_timestamp_value:
+                        # Keep timestamp fields unchanged
+                        test_data[key] = value
+                    else:
+                        # String field - modify last character
+                        if len(value) > 0:
+                            test_data[key] = value[:-1] + 'X' if value[-1] != 'X' else value[:-1] + 'Y'
+                        else:
+                            test_data[key] = 'supabomb_test'
+                elif isinstance(value, (int, float)):
+                    # Numeric field - slightly modify
+                    test_data[key] = value + 1
+                elif isinstance(value, bool):
+                    # Boolean field - flip it
+                    test_data[key] = not value
+                elif value is None:
+                    # Null field - keep as None
+                    test_data[key] = None
+                else:
+                    # Other types - keep original
+                    test_data[key] = value
+        else:
+            # No sample data - try minimal insert with just ID
+            columns = client.get_table_columns(table_name)
+            for col in ['id', 'uuid', '_id', 'pk']:
+                if col in columns:
+                    test_data[col] = test_id
+                    break
+
+        insert_result = "✗"
+        update_result = "✗"
+        delete_result = "✗"
+        details = ""
+
+        # Test INSERT
+        if access_token:
+            insert_success, inserted_data, insert_error = client.test_insert_authenticated(
+                table_name, access_token, test_data
+            )
+        else:
+            insert_success, inserted_data, insert_error = client.test_insert(table_name, test_data)
+
+        if insert_success:
+            insert_result = "[green]✓[/green]"
+
+            # Try to extract the actual ID from inserted data
+            if inserted_data:
+                if isinstance(inserted_data, list) and len(inserted_data) > 0:
+                    inserted_row = inserted_data[0]
+                else:
+                    inserted_row = inserted_data
+
+                # Try to find an ID field in the inserted data
+                actual_id = None
+                found_id_field = None
+                for id_field in ['id', 'uuid', '_id', 'pk'] + list(inserted_row.keys()):
+                    if id_field in inserted_row:
+                        actual_id = inserted_row[id_field]
+                        found_id_field = id_field
+                        break
+
+                # Test UPDATE and DELETE if we successfully inserted and found an ID
+                if actual_id and found_id_field:
+                    match_filter = {found_id_field: f'eq.{actual_id}'}
+
+                    # Test UPDATE - modify an existing string field
+                    update_data = {}
+                    for key, value in inserted_row.items():
+                        # Find a non-ID string field to update
+                        if isinstance(value, str) and key not in [found_id_field] and not any(id_pattern in key.lower() for id_pattern in ['id', 'uuid', '_id', 'pk']):
+                            is_timestamp = any(pattern in key.lower() for pattern in ['created', 'updated', 'timestamp', '_at', 'date', 'time'])
+                            if not is_timestamp:
+                                # Found a suitable field - modify it
+                                update_data[key] = 'supabomb_updated_' + test_id[:8]
+                                break
+
+                    # If no string field found, try numeric
+                    if not update_data:
+                        for key, value in inserted_row.items():
+                            if isinstance(value, (int, float)) and key not in [found_id_field]:
+                                update_data[key] = value + 999
+                                break
+
+                    if update_data:
+                        if access_token:
+                            update_success, update_error = client.test_update_authenticated(
+                                table_name, access_token, match_filter, update_data
+                            )
+                        else:
+                            update_success, update_error = client.test_update(table_name, match_filter, update_data)
+                    else:
+                        update_success = False
+                        update_error = "No suitable field found to test update"
+
+                    if update_success:
+                        update_result = "[green]✓[/green]"
+                    else:
+                        # Categorize update error
+                        if update_error and any(x in update_error.lower() for x in ['row-level security', 'rls', 'forbidden']):
+                            update_result = "[red]✗[/red]"
+                        else:
+                            update_result = "[yellow]⚠[/yellow]"
+
+                    # Test DELETE
+                    if access_token:
+                        delete_success, delete_error = client.test_delete_authenticated(
+                            table_name, access_token, match_filter
+                        )
+                    else:
+                        delete_success, delete_error = client.test_delete(table_name, match_filter)
+
+                    if delete_success:
+                        delete_result = "[green]✓[/green]"
+                        if update_success:
+                            details = "Insert, update, and delete succeeded"
+                        else:
+                            details = f"Insert and delete succeeded, update failed: {update_error}"
+                    else:
+                        # Categorize delete error
+                        if delete_error and any(x in delete_error.lower() for x in ['row-level security', 'rls', 'forbidden']):
+                            delete_result = "[red]✗[/red]"
+                        else:
+                            delete_result = "[yellow]⚠[/yellow]"
+
+                        if update_success:
+                            details = f"Insert and update succeeded, delete failed: {delete_error}"
+                        else:
+                            details = f"Insert succeeded, update failed: {update_error}, delete failed: {delete_error}"
+                        console.print(f"[yellow]⚠[/yellow] Could not clean up test data in {table_name}")
+                else:
+                    details = "Insert succeeded but no ID field found for update/delete"
+                    console.print(f"[yellow]⚠[/yellow] Could not clean up test data in {table_name} (no ID field)")
+            else:
+                details = "Insert succeeded but no data returned"
+        else:
+            # Categorize insert error
+            if insert_error:
+                is_rls_block = any(x in insert_error.lower() for x in ['row-level security', 'rls', 'forbidden', 'permission denied'])
+                is_validation_error = any(x in insert_error.lower() for x in ['violates', 'constraint', 'null value', 'foreign key', 'unique', 'check', 'invalid input syntax', 'invalid', 'type'])
+
+                if is_rls_block:
+                    # True RLS block - operation not permitted
+                    insert_result = "[red]✗[/red]"
+                    details = f"Insert denied by RLS: {insert_error}"
+                elif is_validation_error:
+                    # Schema validation error - insert might be possible with proper data
+                    insert_result = "[yellow]⚠[/yellow]"
+                    details = f"Insert possible but needs crafted data: {insert_error}"
+                else:
+                    # Other error
+                    insert_result = "[red]✗[/red]"
+                    details = f"Insert failed: {insert_error}"
+            else:
+                insert_result = "[red]✗[/red]"
+                details = "Insert failed with unknown error"
+
+            update_result = "[dim]-[/dim]"
+            delete_result = "[dim]-[/dim]"
+
+        results_table.add_row(table_name, insert_result, update_result, delete_result, details)
+
+    console.print("\n")
+    console.print(results_table)
+    console.print("\n[dim]Legend: ✓ = Allowed, ✗ = Denied (RLS), ⚠ = Possible with crafted data, - = Not tested[/dim]")
 
 
 @cli.command()
@@ -844,6 +1290,58 @@ def _get_credentials(project_ref: str = None, anon_key: str = None) -> Optional[
     return None
 
 
+def _ensure_valid_token(client: SupabaseClient, credentials: SupabaseCredentials,
+                        access_token: str) -> Optional[str]:
+    """Check if token is valid and refresh if needed.
+
+    Args:
+        client: SupabaseClient instance
+        credentials: Supabase credentials
+        access_token: Current access token
+
+    Returns:
+        Valid access token or None if refresh failed
+    """
+    # Check if token is expired
+    if client.is_token_expired(access_token):
+        console.print("[yellow]⚠[/yellow] JWT token expired, refreshing...")
+
+        # Get user session to retrieve credentials
+        user_session = cache.get_user_session(credentials.project_ref)
+        if not user_session:
+            console.print("[red]✗[/red] No user session found in cache, cannot refresh token")
+            return None
+
+        email = user_session.get('email')
+        password = user_session.get('password')
+
+        if not email or not password:
+            console.print("[red]✗[/red] Missing email or password in session, cannot refresh token")
+            return None
+
+        # Attempt to refresh token
+        success, new_token, error = client.refresh_token(email, password)
+        if success and new_token:
+            console.print("[green]✓[/green] Token refreshed successfully")
+
+            # Update cache with new token
+            cache.add_user_session(
+                project_ref=credentials.project_ref,
+                email=email,
+                password=password,
+                access_token=new_token,
+                refresh_token=user_session.get('refresh_token', ''),
+                user_id=user_session.get('user_id', '')
+            )
+
+            return new_token
+        else:
+            console.print(f"[red]✗[/red] Failed to refresh token: {error}")
+            return None
+
+    return access_token
+
+
 def _display_discovery_result(result):
     """Display discovery result in formatted output."""
     table = Table(show_header=False, box=box.ROUNDED)
@@ -858,7 +1356,7 @@ def _display_discovery_result(result):
     console.print(table)
 
 
-def _display_enumeration_results(tables, rpc_functions, buckets, auth_counts=None):
+def _display_enumeration_results(tables, rpc_functions, buckets, auth_counts=None, write_perms=None):
     """Display enumeration results.
 
     Args:
@@ -866,17 +1364,24 @@ def _display_enumeration_results(tables, rpc_functions, buckets, auth_counts=Non
         rpc_functions: List of RPC functions
         buckets: List of storage buckets
         auth_counts: Optional dict of authenticated row counts per table
+        write_perms: Optional dict of write permissions (insert/update/delete) per table
     """
     console.print("\n[bold]Tables:[/bold]")
     table = Table(box=box.ROUNDED)
     table.add_column("Name", style="cyan")
-    table.add_column("Accessible", style="green")
+    table.add_column("Read", style="green")
     table.add_column("Columns", style="yellow")
     table.add_column("Anon Rows", style="magenta")
 
     # Add authenticated column if we have auth data
     if auth_counts is not None:
         table.add_column("Auth Rows", style="blue")
+
+    # Add write permission columns if tested
+    if write_perms is not None:
+        table.add_column("INSERT", style="yellow")
+        table.add_column("UPDATE", style="blue")
+        table.add_column("DELETE", style="red")
 
     for t in tables:
         anon_count = str(t.row_count) if t.row_count is not None else "N/A"
@@ -894,13 +1399,36 @@ def _display_enumeration_results(tables, rpc_functions, buckets, auth_counts=Non
             auth_count_str = str(auth_count) if auth_count is not None else "N/A"
             row_data.append(auth_count_str)
 
+        # Add write permissions if tested
+        if write_perms is not None:
+            perms = write_perms.get(t.name, {'insert': 'denied', 'update': 'denied', 'delete': 'denied'})
+
+            # Helper function to get symbol for status
+            def get_symbol(status):
+                if status == 'allowed':
+                    return "✓"
+                elif status == 'possible':
+                    return "⚠"
+                else:  # denied
+                    return "✗"
+
+            row_data.append(get_symbol(perms['insert']))
+            row_data.append(get_symbol(perms['update']))
+            row_data.append(get_symbol(perms['delete']))
+
         table.add_row(*row_data)
 
     console.print(table)
 
-    # Show legend if we have both counts
+    # Show legend
+    legend_parts = []
     if auth_counts is not None:
-        console.print("[dim]Anon Rows: accessible with anonymous key | Auth Rows: accessible when authenticated[/dim]")
+        legend_parts.append("Anon Rows: accessible with anonymous key | Auth Rows: accessible when authenticated")
+    if write_perms is not None:
+        legend_parts.append("Write permissions: ✓ = Allowed, ✗ = Denied (RLS), ⚠ = Possible with crafted data")
+
+    if legend_parts:
+        console.print(f"[dim]{' | '.join(legend_parts)}[/dim]")
 
     console.print("\n[bold]RPC Functions:[/bold]")
     rpc_table = Table(box=box.ROUNDED)
