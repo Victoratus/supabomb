@@ -1,0 +1,23 @@
+[project]
+name = "supabomb"
+version = "0.1.0"
+description = "A CLI tool for discovering and pentesting Supabase instances"
+readme = "README.md"
+authors = [
+    { name = "Victor Yrazusta", email = "victoryrazustaibarra@gmail.com" }
+]
+requires-python = ">=3.13"
+dependencies = [
+    "beautifulsoup4>=4.14.2",
+    "click>=8.3.0",
+    "pyjwt>=2.10.1",
+    "requests>=2.32.5",
+    "rich>=14.2.0",
+]
+
+[project.scripts]
+supabomb = "supabomb:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
