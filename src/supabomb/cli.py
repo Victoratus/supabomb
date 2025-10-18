@@ -289,6 +289,119 @@ def query(project_ref, anon_key, table, limit, output, format, use_anon):
 @cli.command()
 @click.option('--project-ref', '-p', help='Supabase project reference (optional if cached)')
 @click.option('--anon-key', '-k', help='Supabase anonymous API key (optional if cached)')
+@click.option('--output', '-o', help='Output file for results (defaults to {project_ref}_dump.json)')
+@click.option('--use-anon', is_flag=True, help='Force anonymous query (ignore authenticated session)')
+def dump(project_ref, anon_key, output, use_anon):
+    """Dump all data from all tables in the database.
+
+    By default, uses authenticated session if available, otherwise uses anonymous key.
+    Use --use-anon to force anonymous query.
+
+    Examples:
+
+        supabomb dump  # Uses auth if available, saves to {project_ref}_dump.json
+
+        supabomb dump --use-anon  # Force anonymous query
+
+        supabomb dump -o full_backup.json  # Custom output filename
+
+        supabomb dump -p abc123xyz -k eyJ... -o backup.json
+    """
+    # Load credentials from cache if not provided
+    credentials = _get_credentials(project_ref, anon_key)
+    if not credentials:
+        console.print("[bold red]Error:[/bold red] No credentials provided and no cached credentials found.")
+        console.print("Run [bold cyan]supabomb discover[/bold cyan] first or provide --project-ref and --anon-key")
+        raise click.Abort()
+
+    # Determine output filename
+    if not output:
+        output = f"{credentials.project_ref}_dump.json"
+
+    console.print(f"\n[bold cyan]Dumping all tables from:[/bold cyan] {credentials.project_ref}")
+
+    client = SupabaseClient(credentials)
+
+    # Test connection
+    success, error = client.test_connection()
+    if not success:
+        console.print(f"[bold red]✗[/bold red] Connection failed: {error}")
+        raise click.Abort()
+
+    console.print("[bold green]✓[/bold green] Connection successful")
+
+    # Check for authenticated session (unless --use-anon is specified)
+    access_token = None
+    auth_mode = "anonymous"
+
+    if not use_anon:
+        user_session = cache.get_user_session(credentials.project_ref)
+        if user_session:
+            access_token = user_session.get('access_token')
+            if access_token:
+                auth_mode = "authenticated"
+                console.print(f"[dim]🔐 Using authenticated session: {user_session['email']}[/dim]")
+
+    console.print(f"[bold cyan]Mode:[/bold cyan] {auth_mode}\n")
+
+    # Get all tables
+    enumerator = SupabaseEnumerator(client)
+    with console.status("[bold green]Discovering tables..."):
+        table_names = client.list_tables()
+
+    if not table_names:
+        console.print("[bold yellow]No tables found[/bold yellow]")
+        return
+
+    console.print(f"[bold green]✓[/bold green] Found {len(table_names)} tables")
+
+    # Query all tables
+    dump_data = {
+        'project_ref': credentials.project_ref,
+        'url': credentials.url,
+        'auth_mode': auth_mode,
+        'tables': {}
+    }
+
+    successful_tables = 0
+    failed_tables = 0
+
+    for i, table_name in enumerate(table_names, 1):
+        with console.status(f"[bold green]Querying table {i}/{len(table_names)}: {table_name}..."):
+            if access_token:
+                success, data, error = client.query_table_authenticated(table_name, access_token, limit=None)
+            else:
+                success, data, error = client.query_table(table_name, limit=None)
+
+        if success:
+            dump_data['tables'][table_name] = {
+                'row_count': len(data) if data else 0,
+                'data': data if data else []
+            }
+            successful_tables += 1
+            console.print(f"  [green]✓[/green] {table_name}: {len(data) if data else 0} rows")
+        else:
+            dump_data['tables'][table_name] = {
+                'error': error,
+                'data': []
+            }
+            failed_tables += 1
+            console.print(f"  [red]✗[/red] {table_name}: {error}")
+
+    # Save to file
+    console.print(f"\n[bold cyan]Saving dump to:[/bold cyan] {output}")
+    _save_json(output, dump_data)
+
+    console.print(f"\n[bold green]✓ Dump complete![/bold green]")
+    console.print(f"  Successful: {successful_tables} tables")
+    if failed_tables > 0:
+        console.print(f"  Failed: {failed_tables} tables")
+    console.print(f"  Output: {output}")
+
+
+@cli.command()
+@click.option('--project-ref', '-p', help='Supabase project reference (optional if cached)')
+@click.option('--anon-key', '-k', help='Supabase anonymous API key (optional if cached)')
 @click.option('--edge-functions', '-e', multiple=True, help='Edge function names to test')
 @click.option('--output', '-o', help='Output file for report (JSON)')
 def test(project_ref, anon_key, edge_functions, output):

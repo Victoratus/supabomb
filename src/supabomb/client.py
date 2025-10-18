@@ -152,16 +152,20 @@ class SupabaseClient:
 
         Args:
             table_name: Name of table to query
-            limit: Maximum rows to return
+            limit: Maximum rows to return (None for all rows)
             select: Columns to select
 
         Returns:
             Tuple of (success, data, error_message)
         """
         try:
+            params = {'select': select}
+            if limit is not None:
+                params['limit'] = limit
+
             response = self.session.get(
                 f"{self.rest_url}/{table_name}",
-                params={'select': select, 'limit': limit},
+                params=params,
                 timeout=self.timeout
             )
 
@@ -452,7 +456,7 @@ class SupabaseClient:
         Args:
             table_name: Name of table to query
             access_token: User JWT access token
-            limit: Maximum rows to return
+            limit: Maximum rows to return (None for all rows)
             select: Columns to select
 
         Returns:
@@ -467,9 +471,13 @@ class SupabaseClient:
                 'Content-Type': 'application/json'
             })
 
+            params = {'select': select}
+            if limit is not None:
+                params['limit'] = limit
+
             response = temp_session.get(
                 f"{self.rest_url}/{table_name}",
-                params={'select': select, 'limit': limit},
+                params=params,
                 timeout=self.timeout
             )
 
