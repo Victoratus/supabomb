@@ -4,12 +4,9 @@ from bs4 import BeautifulSoup
 from typing import Optional, List
 import re
 from .models import DiscoveryResult
-from .utils import (
-    extract_supabase_url,
-    extract_project_ref,
-    extract_jwt_from_text,
-    is_supabase_anon_key
-)
+from .url_utils import extract_supabase_url, extract_project_ref
+from .extraction_utils import extract_jwt_from_text
+from .jwt_utils import is_supabase_anon_key
 
 
 class SupabaseDiscovery:

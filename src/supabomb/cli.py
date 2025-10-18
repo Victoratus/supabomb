@@ -14,6 +14,15 @@ from .enumeration import SupabaseEnumerator
 from .testing import SupabaseTester
 from .models import SupabaseCredentials
 from .cache import CredentialCache
+from .output_formatting import (
+    display_discovery_result,
+    display_enumeration_results,
+    display_test_results,
+    save_json,
+    save_csv
+)
+from .write_testing import test_table_write_permissions
+from .signup_handler import signup_with_verification, display_user_info
 
 
 console = Console()
@@ -56,7 +65,7 @@ def discover(url, file, har, output):
 
         if result.found:
             console.print("[bold green]✓[/bold green] Supabase instance found!")
-            _display_discovery_result(result)
+            display_discovery_result(result)
 
             # Save to cache if we have credentials
             if result.credentials:
@@ -64,7 +73,7 @@ def discover(url, file, har, output):
                 console.print(f"\n[dim]💾 Credentials saved to {cache.cache_file}[/dim]")
 
             if output:
-                _save_json(output, result.__dict__)
+                save_json(output, result.__dict__)
         else:
             console.print("[bold red]✗[/bold red] No Supabase instance found")
 
@@ -74,7 +83,7 @@ def discover(url, file, har, output):
 
         if result.found:
             console.print("[bold green]✓[/bold green] Supabase instance found!")
-            _display_discovery_result(result)
+            display_discovery_result(result)
 
             # Save to cache if we have credentials
             if result.credentials:
@@ -82,7 +91,7 @@ def discover(url, file, har, output):
                 console.print(f"\n[dim]💾 Credentials saved to {cache.cache_file}[/dim]")
 
             if output:
-                _save_json(output, result.__dict__)
+                save_json(output, result.__dict__)
         else:
             console.print("[bold red]✗[/bold red] No Supabase instance found")
 
@@ -94,7 +103,7 @@ def discover(url, file, har, output):
             console.print(f"[bold green]✓[/bold green] Found {len(results)} Supabase instance(s)!")
             for i, result in enumerate(results, 1):
                 console.print(f"\n[bold]Instance {i}:[/bold]")
-                _display_discovery_result(result)
+                display_discovery_result(result)
 
                 # Save each to cache if we have credentials
                 if result.credentials:
@@ -104,7 +113,7 @@ def discover(url, file, har, output):
                 console.print(f"\n[dim]💾 Credentials saved to {cache.cache_file}[/dim]")
 
             if output:
-                _save_json(output, [r.__dict__ for r in results])
+                save_json(output, [r.__dict__ for r in results])
         else:
             console.print("[bold red]✗[/bold red] No Supabase instances found")
 
@@ -119,7 +128,8 @@ def discover(url, file, har, output):
 @click.option('--output', '-o', help='Output file for results (JSON)')
 @click.option('--sample-size', '-s', default=5, help='Number of sample rows per table')
 @click.option('--test-write', is_flag=True, help='Test INSERT/UPDATE/DELETE permissions on tables')
-def enum(project_ref, anon_key, output, sample_size, test_write):
+@click.option('--verbose', '-v', is_flag=True, help='Show detailed email verification debugging information')
+def enum(project_ref, anon_key, output, sample_size, test_write, verbose):
     """Enumerate Supabase endpoints, tables, and RPC functions.
 
     Examples:
@@ -186,7 +196,8 @@ def enum(project_ref, anon_key, output, sample_size, test_write):
         console.print(f"\n[bold cyan]Testing write permissions...[/bold cyan]")
 
         for table in tables:
-            console.print(f"[dim]Testing {table.name}...[/dim]")
+            if verbose:
+                console.print(f"[dim]Testing {table.name}...[/dim]")
 
             # Use sample data from table enumeration as template
             test_id = str(uuid.uuid4())
@@ -320,7 +331,7 @@ def enum(project_ref, anon_key, output, sample_size, test_write):
             }
 
     # Display results
-    _display_enumeration_results(tables, rpc_functions, buckets,
+    display_enumeration_results(tables, rpc_functions, buckets,
                                  auth_counts if access_token else None,
                                  write_perms if test_write else None)
 
@@ -355,7 +366,7 @@ def enum(project_ref, anon_key, output, sample_size, test_write):
             ],
             'storage_buckets': buckets
         }
-        _save_json(output, results)
+        save_json(output, results)
         console.print(f"\n[bold green]Results saved to:[/bold green] {output}")
 
 
@@ -437,9 +448,9 @@ def query(project_ref, anon_key, table, limit, output, format, use_anon):
     # Save to file
     if output:
         if format == 'json':
-            _save_json(output, data)
+            save_json(output, data)
         elif format == 'csv':
-            _save_csv(output, data)
+            save_csv(output, data)
 
         console.print(f"\n[bold green]Data saved to:[/bold green] {output}")
 
@@ -551,7 +562,7 @@ def dump(project_ref, anon_key, output, use_anon):
 
     # Save to file
     console.print(f"\n[bold cyan]Saving dump to:[/bold cyan] {output}")
-    _save_json(output, dump_data)
+    save_json(output, dump_data)
 
     console.print(f"\n[bold green]✓ Dump complete![/bold green]")
     console.print(f"  Successful: {successful_tables} tables")
@@ -607,11 +618,11 @@ def test(project_ref, anon_key, edge_functions, output):
     report = tester.generate_report(findings)
 
     # Display results
-    _display_test_results(report)
+    display_test_results(report)
 
     # Save to file
     if output:
-        _save_json(output, {
+        save_json(output, {
             'project_ref': credentials.project_ref,
             'url': credentials.url,
             'summary': report['by_severity'],
@@ -636,7 +647,8 @@ def test(project_ref, anon_key, edge_functions, output):
 @click.option('--anon-key', '-k', help='Supabase anonymous API key (optional if cached)')
 @click.option('--table', '-t', help='Specific table to test (optional, tests all tables if not provided)')
 @click.option('--use-anon', is_flag=True, help='Force anonymous query (ignore authenticated session)')
-def test_write(project_ref, anon_key, table, use_anon):
+@click.option('--verbose', '-v', is_flag=True, help='Show detailed email verification debugging information')
+def test_write(project_ref, anon_key, table, use_anon, verbose):
     """Test data manipulation (INSERT/UPDATE/DELETE) permissions on tables.
 
     This command will attempt to:
@@ -720,7 +732,8 @@ def test_write(project_ref, anon_key, table, use_anon):
     results_table.add_column("Details", style="white")
 
     for table_name in tables_to_test:
-        console.print(f"[dim]Testing {table_name}...[/dim]")
+        if verbose:
+            console.print(f"[dim]Testing {table_name}...[/dim]")
 
         # Try to get sample data to use as template
         if access_token:
@@ -1095,7 +1108,7 @@ def signup(project_ref, anon_key, email, password, verify_email, verbose):
     if not mailer_autoconfirm:
         if verify_email:
             console.print("[bold cyan]ℹ[/bold cyan] Email verification required - using temporary email service")
-            from .utils import create_temp_email
+            from .email_utils import create_temp_email
             try:
                 temp_email_obj = create_temp_email()
                 email = temp_email_obj.address
@@ -1168,7 +1181,7 @@ def signup(project_ref, anon_key, email, password, verify_email, verbose):
             console.print("[bold cyan]⏳[/bold cyan] Account created, waiting for verification email...")
             console.print(f"User ID: {response.get('id')}")
 
-            from .utils import wait_for_verification_email
+            from .email_utils import wait_for_verification_email
 
             if verbose:
                 console.print("[dim]Checking for verification email every 3 seconds (verbose mode enabled)...[/dim]")
@@ -1340,191 +1353,6 @@ def _ensure_valid_token(client: SupabaseClient, credentials: SupabaseCredentials
             return None
 
     return access_token
-
-
-def _display_discovery_result(result):
-    """Display discovery result in formatted output."""
-    table = Table(show_header=False, box=box.ROUNDED)
-    table.add_column("Property", style="cyan")
-    table.add_column("Value", style="white")
-
-    table.add_row("Project Reference", result.project_ref or "N/A")
-    table.add_row("URL", result.url or "N/A")
-    table.add_row("Anon Key", result.anon_key[:50] + "..." if result.anon_key else "Not found")
-    table.add_row("Source", result.source or "N/A")
-
-    console.print(table)
-
-
-def _display_enumeration_results(tables, rpc_functions, buckets, auth_counts=None, write_perms=None):
-    """Display enumeration results.
-
-    Args:
-        tables: List of table info
-        rpc_functions: List of RPC functions
-        buckets: List of storage buckets
-        auth_counts: Optional dict of authenticated row counts per table
-        write_perms: Optional dict of write permissions (insert/update/delete) per table
-    """
-    console.print("\n[bold]Tables:[/bold]")
-    table = Table(box=box.ROUNDED)
-    table.add_column("Name", style="cyan")
-    table.add_column("Read", style="green")
-    table.add_column("Columns", style="yellow")
-    table.add_column("Anon Rows", style="magenta")
-
-    # Add authenticated column if we have auth data
-    if auth_counts is not None:
-        table.add_column("Auth Rows", style="blue")
-
-    # Add write permission columns if tested
-    if write_perms is not None:
-        table.add_column("INSERT", style="yellow")
-        table.add_column("UPDATE", style="blue")
-        table.add_column("DELETE", style="red")
-
-    for t in tables:
-        anon_count = str(t.row_count) if t.row_count is not None else "N/A"
-
-        row_data = [
-            t.name,
-            "✓" if t.accessible else "✗",
-            str(len(t.columns)),
-            anon_count
-        ]
-
-        # Add authenticated count if available
-        if auth_counts is not None:
-            auth_count = auth_counts.get(t.name)
-            auth_count_str = str(auth_count) if auth_count is not None else "N/A"
-            row_data.append(auth_count_str)
-
-        # Add write permissions if tested
-        if write_perms is not None:
-            perms = write_perms.get(t.name, {'insert': 'denied', 'update': 'denied', 'delete': 'denied'})
-
-            # Helper function to get symbol for status
-            def get_symbol(status):
-                if status == 'allowed':
-                    return "✓"
-                elif status == 'possible':
-                    return "⚠"
-                else:  # denied
-                    return "✗"
-
-            row_data.append(get_symbol(perms['insert']))
-            row_data.append(get_symbol(perms['update']))
-            row_data.append(get_symbol(perms['delete']))
-
-        table.add_row(*row_data)
-
-    console.print(table)
-
-    # Show legend
-    legend_parts = []
-    if auth_counts is not None:
-        legend_parts.append("Anon Rows: accessible with anonymous key | Auth Rows: accessible when authenticated")
-    if write_perms is not None:
-        legend_parts.append("Write permissions: ✓ = Allowed, ✗ = Denied (RLS), ⚠ = Possible with crafted data")
-
-    if legend_parts:
-        console.print(f"[dim]{' | '.join(legend_parts)}[/dim]")
-
-    console.print("\n[bold]RPC Functions:[/bold]")
-    rpc_table = Table(box=box.ROUNDED)
-    rpc_table.add_column("Name", style="cyan")
-    rpc_table.add_column("Accessible", style="green")
-    rpc_table.add_column("Parameters", style="yellow")
-
-    for f in rpc_functions:
-        rpc_table.add_row(
-            f.name,
-            "✓" if f.accessible else "✗",
-            ", ".join(f.parameters) if f.parameters else "Unknown"
-        )
-
-    console.print(rpc_table)
-
-    if buckets:
-        console.print("\n[bold]Storage Buckets:[/bold]")
-        bucket_table = Table(box=box.ROUNDED)
-        bucket_table.add_column("Name", style="cyan")
-        bucket_table.add_column("Accessible", style="green")
-
-        for b in buckets:
-            bucket_table.add_row(
-                b['name'],
-                "✓" if b['accessible'] else "✗"
-            )
-
-        console.print(bucket_table)
-
-
-def _display_test_results(report):
-    """Display test results."""
-    # Summary panel
-    summary_text = f"""
-[bold]Total Findings:[/bold] {report['total_findings']}
-[bold]Risk Score:[/bold] {report['risk_score']}
-
-[bold red]Critical:[/bold red] {report['by_severity']['critical']}
-[bold]High:[/bold] {report['by_severity']['high']}
-[bold yellow]Medium:[/bold yellow] {report['by_severity']['medium']}
-[bold]Low:[/bold] {report['by_severity']['low']}
-[bold cyan]Info:[/bold cyan] {report['by_severity']['info']}
-    """
-
-    console.print(Panel(summary_text.strip(), title="Security Test Summary", border_style="cyan"))
-
-    # Detailed findings
-    if report['findings']:
-        console.print("\n[bold]Findings:[/bold]\n")
-
-        for i, finding in enumerate(report['findings'], 1):
-            severity_color = {
-                'critical': 'red',
-                'high': 'red',
-                'medium': 'yellow',
-                'low': 'white',
-                'info': 'cyan'
-            }.get(finding.severity, 'white')
-
-            finding_text = f"""
-[bold]Severity:[/bold] [{severity_color}]{finding.severity.upper()}[/{severity_color}]
-[bold]Affected:[/bold] {finding.affected_resource}
-
-[bold]Description:[/bold]
-{finding.description}
-
-[bold]Recommendation:[/bold]
-{finding.recommendation}
-            """
-
-            console.print(Panel(
-                finding_text.strip(),
-                title=f"{i}. {finding.title}",
-                border_style=severity_color
-            ))
-            console.print()
-
-
-def _save_json(filename, data):
-    """Save data to JSON file."""
-    with open(filename, 'w') as f:
-        json.dump(data, f, indent=2)
-
-
-def _save_csv(filename, data):
-    """Save data to CSV file."""
-    import csv
-
-    if not data:
-        return
-
-    with open(filename, 'w', newline='') as f:
-        writer = csv.DictWriter(f, fieldnames=data[0].keys())
-        writer.writeheader()
-        writer.writerows(data)
 
 
 if __name__ == '__main__':

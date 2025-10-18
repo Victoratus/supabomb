@@ -5,7 +5,7 @@ import json
 import base64
 import time
 from .models import SupabaseCredentials, TableInfo, RPCFunction, EdgeFunction
-from .utils import parse_postgrest_error
+from .extraction_utils import parse_postgrest_error
 
 
 class SupabaseClient:
