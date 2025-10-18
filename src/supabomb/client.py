@@ -71,8 +71,9 @@ class SupabaseClient:
             OpenAPI schema dictionary or None if error
         """
         try:
+            # OpenAPI endpoint requires trailing slash
             response = self.session.get(
-                self.rest_url,
+                f"{self.rest_url}/",
                 headers={'Accept': 'application/openapi+json'},
                 timeout=self.timeout
             )

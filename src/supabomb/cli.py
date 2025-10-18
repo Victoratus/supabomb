@@ -301,8 +301,8 @@ def test(project_ref, anon_key, edge_functions, output):
     # Save to file
     if output:
         _save_json(output, {
-            'project_ref': project_ref,
-            'url': url,
+            'project_ref': credentials.project_ref,
+            'url': credentials.url,
             'summary': report['by_severity'],
             'risk_score': report['risk_score'],
             'findings': [
@@ -321,13 +321,15 @@ def test(project_ref, anon_key, edge_functions, output):
 
 
 @cli.command()
-@click.option('--project-ref', '-p', required=True, help='Supabase project reference')
-@click.option('--anon-key', '-k', required=True, help='Supabase anonymous API key')
+@click.option('--project-ref', '-p', help='Supabase project reference (optional if cached)')
+@click.option('--anon-key', '-k', help='Supabase anonymous API key (optional if cached)')
 @click.option('--edge-functions', '-e', multiple=True, help='Edge function names to check')
 def check_jwt(project_ref, anon_key, edge_functions):
     """Check which edge functions require JWT authentication.
 
     Examples:
+
+        supabomb check-jwt -e function1 -e function2  # Uses cached credentials
 
         supabomb check-jwt -p abc123xyz -k eyJ... -e function1 -e function2
     """
@@ -335,15 +337,14 @@ def check_jwt(project_ref, anon_key, edge_functions):
         console.print("[bold red]Error:[/bold red] Please specify at least one edge function with -e")
         raise click.Abort()
 
-    console.print(f"\n[bold cyan]Checking edge functions:[/bold cyan] {project_ref}\n")
+    # Load credentials from cache if not provided
+    credentials = _get_credentials(project_ref, anon_key)
+    if not credentials:
+        console.print("[bold red]Error:[/bold red] No credentials provided and no cached credentials found.")
+        console.print("Run [bold cyan]supabomb discover[/bold cyan] first or provide --project-ref and --anon-key")
+        raise click.Abort()
 
-    # Create credentials
-    url = f"https://{project_ref}.supabase.co"
-    credentials = SupabaseCredentials(
-        project_ref=project_ref,
-        anon_key=anon_key,
-        url=url
-    )
+    console.print(f"\n[bold cyan]Checking edge functions:[/bold cyan] {credentials.project_ref}\n")
 
     client = SupabaseClient(credentials)
     enumerator = SupabaseEnumerator(client)
@@ -368,6 +369,72 @@ def check_jwt(project_ref, anon_key, edge_functions):
         )
 
     console.print(table)
+
+
+@cli.command()
+@click.option('--clear', is_flag=True, help='Clear all cached credentials')
+@click.option('--remove', '-r', help='Remove specific project by project-ref')
+def cached(clear, remove):
+    """List and manage cached Supabase credentials.
+
+    Examples:
+
+        supabomb cached  # List all cached credentials
+
+        supabomb cached --remove abc123xyz  # Remove specific project
+
+        supabomb cached --clear  # Clear all cached credentials
+    """
+    if clear:
+        cache.clear()
+        console.print("[bold green]✓[/bold green] All cached credentials cleared")
+        return
+
+    if remove:
+        success = cache.remove(remove)
+        if success:
+            console.print(f"[bold green]✓[/bold green] Removed credentials for {remove}")
+        else:
+            console.print(f"[bold red]✗[/bold red] No cached credentials found for {remove}")
+        return
+
+    # List all cached credentials
+    discoveries = cache.list_all()
+
+    if not discoveries:
+        console.print("[bold yellow]No cached credentials found[/bold yellow]")
+        console.print("Run [bold cyan]supabomb discover[/bold cyan] to find Supabase instances")
+        return
+
+    console.print(f"\n[bold cyan]Cached Credentials[/bold cyan] ({cache.cache_file})\n")
+
+    table = Table(box=box.ROUNDED)
+    table.add_column("#", style="dim", width=3)
+    table.add_column("Project Ref", style="cyan")
+    table.add_column("URL", style="blue")
+    table.add_column("Source", style="yellow")
+    table.add_column("Discovered", style="green")
+    table.add_column("Last Used", style="magenta")
+
+    for i, disc in enumerate(discoveries, 1):
+        # Truncate timestamps for display
+        discovered = disc.get("discovered_at", "")[:10]
+        last_used = disc.get("last_used", "")[:10]
+
+        # Mark the most recently used
+        marker = "→" if i == 1 else ""
+
+        table.add_row(
+            f"{marker}{i}",
+            disc["project_ref"],
+            disc["url"],
+            disc.get("source", "")[:40],
+            discovered,
+            last_used
+        )
+
+    console.print(table)
+    console.print(f"\n[dim]The most recent (#1) will be used by default[/dim]")
 
 
 def _get_credentials(project_ref: str = None, anon_key: str = None) -> Optional[SupabaseCredentials]:

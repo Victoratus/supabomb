@@ -4,6 +4,11 @@ A powerful CLI tool for discovering and pentesting Supabase instances in authori
 
 ## Features
 
+- **Automatic Credential Caching**: Discovered credentials are automatically saved
+  - No need to copy/paste project refs and API keys
+  - Seamlessly reuse credentials across commands
+  - Manage multiple projects easily
+
 - **Discovery**: Find Supabase instances in web applications
   - Analyze HTML pages and JavaScript bundles
   - Extract project references and API keys
@@ -40,6 +45,20 @@ uv run supabomb --help
 
 ## Usage
 
+### Quick Workflow
+
+The typical workflow is simple:
+
+```bash
+# 1. Discover Supabase instance (credentials are auto-saved)
+supabomb discover --url https://example.com
+
+# 2. Use any command without providing credentials again
+supabomb enum           # Enumerate resources
+supabomb test           # Run security tests
+supabomb query -t users # Query tables
+```
+
 ### Discover Supabase Instances
 
 ```bash
@@ -56,25 +75,54 @@ supabomb discover --har network-traffic.har
 ### Enumerate Resources
 
 ```bash
+# With explicit credentials
 supabomb enum --project-ref abc123xyz --anon-key "eyJ..."
+
+# Or use cached credentials from discovery
+supabomb enum
 ```
 
 ### Query Tables
 
 ```bash
-supabomb query --project-ref abc123xyz --anon-key "eyJ..." --table users --limit 100
+# Uses cached credentials
+supabomb query --table users --limit 100
+
+# Or with explicit credentials
+supabomb query --project-ref abc123xyz --anon-key "eyJ..." --table users
 ```
 
 ### Security Testing
 
 ```bash
-supabomb test --project-ref abc123xyz --anon-key "eyJ..." --output report.json
+# Uses cached credentials
+supabomb test --output report.json
+
+# Or with explicit credentials
+supabomb test --project-ref abc123xyz --anon-key "eyJ..."
 ```
 
 ### Check Edge Functions
 
 ```bash
-supabomb check-jwt --project-ref abc123xyz --anon-key "eyJ..." -e function1 -e function2
+# Uses cached credentials
+supabomb check-jwt -e function1 -e function2
+
+# Or with explicit credentials
+supabomb check-jwt --project-ref abc123xyz --anon-key "eyJ..." -e function1
+```
+
+### Manage Cached Credentials
+
+```bash
+# List all cached credentials
+supabomb cached
+
+# Remove specific project
+supabomb cached --remove abc123xyz
+
+# Clear all cached credentials
+supabomb cached --clear
 ```
 
 ## Legal & Ethical Use
@@ -98,8 +146,10 @@ supabomb/
 │   ├── discovery.py     # Web discovery
 │   ├── enumeration.py   # Resource enumeration
 │   ├── testing.py       # Security testing
+│   ├── cache.py         # Credential caching
 │   ├── models.py        # Data models
 │   └── utils.py         # Utilities
+├── .supabomb.json       # Cached credentials (auto-generated)
 └── pyproject.toml
 ```
 
