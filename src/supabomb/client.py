@@ -195,11 +195,12 @@ class SupabaseClient:
                 timeout=self.timeout
             )
 
-            if response.status_code == 200:
-                # Count is in Content-Range header
+            # PostgREST returns 206 (Partial Content) with count
+            if response.status_code in [200, 206]:
+                # Count is in Content-Range header (format: "0-0/20" or "*/20")
                 content_range = response.headers.get('Content-Range', '')
                 if '/' in content_range:
-                    count_str = content_range.split('/')[-1]
+                    count_str = content_range.split('/')[-1].strip()
                     if count_str.isdigit():
                         return int(count_str)
             return None
