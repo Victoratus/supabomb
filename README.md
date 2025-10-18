@@ -92,12 +92,24 @@ supabomb enum
 ### Query Tables
 
 ```bash
-# Uses cached credentials
+# Query with authenticated session (default if available)
 supabomb query --table users --limit 100
+
+# Force anonymous query (ignore authenticated session)
+supabomb query --table users --use-anon
+
+# Query and export to file
+supabomb query -t posts -o posts.json
+supabomb query -t comments -o comments.csv -f csv
 
 # Or with explicit credentials
 supabomb query --project-ref abc123xyz --anon-key "eyJ..." --table users
 ```
+
+**Authentication behavior:**
+- By default, uses authenticated session if available (from `supabomb signup`)
+- Falls back to anonymous key if no session exists
+- Use `--use-anon` flag to force anonymous query
 
 ### Security Testing
 

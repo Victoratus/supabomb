@@ -211,12 +211,18 @@ def enum(project_ref, anon_key, output, sample_size):
 @click.option('--limit', '-l', default=100, help='Maximum rows to return')
 @click.option('--output', '-o', help='Output file for results (JSON or CSV)')
 @click.option('--format', '-f', type=click.Choice(['json', 'csv']), default='json', help='Output format')
-def query(project_ref, anon_key, table, limit, output, format):
+@click.option('--use-anon', is_flag=True, help='Force anonymous query (ignore authenticated session)')
+def query(project_ref, anon_key, table, limit, output, format, use_anon):
     """Query a specific table and export data.
+
+    By default, uses authenticated session if available, otherwise uses anonymous key.
+    Use --use-anon to force anonymous query.
 
     Examples:
 
-        supabomb query -t users -l 100  # Uses cached credentials
+        supabomb query -t users -l 100  # Uses auth if available, else anon
+
+        supabomb query -t users --use-anon  # Force anonymous query
 
         supabomb query -p abc123xyz -k eyJ... -t users -l 100
 
@@ -233,10 +239,25 @@ def query(project_ref, anon_key, table, limit, output, format):
 
     client = SupabaseClient(credentials)
 
-    console.print(f"\n[bold cyan]Querying table:[/bold cyan] {table}")
+    # Check for authenticated session (unless --use-anon is specified)
+    access_token = None
+    auth_mode = "anonymous"
+
+    if not use_anon:
+        user_session = cache.get_user_session(credentials.project_ref)
+        if user_session:
+            access_token = user_session.get('access_token')
+            if access_token:
+                auth_mode = "authenticated"
+                console.print(f"[dim]🔐 Using authenticated session: {user_session['email']}[/dim]")
+
+    console.print(f"[bold cyan]Querying table:[/bold cyan] {table} [dim]({auth_mode})[/dim]")
 
     with console.status("[bold green]Fetching data..."):
-        success, data, error = client.query_table(table, limit=limit)
+        if access_token:
+            success, data, error = client.query_table_authenticated(table, access_token, limit=limit)
+        else:
+            success, data, error = client.query_table(table, limit=limit)
 
     if not success:
         console.print(f"[bold red]✗[/bold red] Query failed: {error}")
