@@ -48,14 +48,24 @@ A powerful CLI tool for discovering and pentesting Supabase instances in authori
 
 ## 📦 Installation
 
-Using uv (recommended):
+### Prerequisites
+
+Install [uv](https://docs.astral.sh/uv/) - a fast Python package installer and runner.
+
+### Running Supabomb
+
+With uv, you can run supabomb directly without installation:
 
 ```bash
+# Clone the repository
+git clone https://github.com/Victoratus/supabomb.git
 cd supabomb
-uv pip install -e .
-# Or run directly:
+
+# Run directly with uv (automatically handles dependencies)
 uv run supabomb --help
 ```
+
+The first run will automatically create a virtual environment and install all dependencies. Subsequent runs will be instant!
 
 ## 🚀 Usage
 
@@ -65,34 +75,34 @@ The typical workflow is simple:
 
 ```bash
 # 1. Discover Supabase instance (credentials are auto-saved)
-supabomb discover --url https://example.com
+uv run supabomb discover --url https://example.com
 
 # 2. Use any command without providing credentials again
-supabomb enum           # Enumerate resources
-supabomb test           # Run security tests
-supabomb query -t users # Query tables
+uv run supabomb enum           # Enumerate resources
+uv run supabomb test           # Run security tests
+uv run supabomb query -t users # Query tables
 ```
 
 ### 🔍 Discover Supabase Instances
 
 ```bash
 # From a web URL (standard single-page analysis)
-supabomb discover --url https://example.com
+uv run supabomb discover --url https://example.com
 
 # Deep crawl with Katana (recommended for SPAs and complex sites)
-supabomb discover --url https://example.com --katana
+uv run supabomb discover --url https://example.com --katana
 
 # Katana with custom settings
-supabomb discover --url https://example.com --katana --max-js-files 100 --verbose
+uv run supabomb discover --url https://example.com --katana --max-js-files 100 --verbose
 
 # Katana with extended timeout for large sites
-supabomb discover --url https://example.com --katana --katana-timeout 300
+uv run supabomb discover --url https://example.com --katana --katana-timeout 300
 
 # From a JavaScript file
-supabomb discover --file bundle.js
+uv run supabomb discover --file bundle.js
 
 # From HAR file
-supabomb discover --har network-traffic.har
+uv run supabomb discover --har network-traffic.har
 ```
 
 **Katana Discovery Benefits:**
@@ -106,31 +116,31 @@ supabomb discover --har network-traffic.har
 
 ```bash
 # With explicit credentials
-supabomb enum --project-ref abc123xyz --anon-key "eyJ..."
+uv run supabomb enum --project-ref abc123xyz --anon-key "eyJ..."
 
 # Or use cached credentials from discovery
-supabomb enum
+uv run supabomb enum
 ```
 
 ### 💾 Query Tables
 
 ```bash
 # Query with authenticated session (default if available)
-supabomb query --table users --limit 100
+uv run supabomb query --table users --limit 100
 
 # Force anonymous query (ignore authenticated session)
-supabomb query --table users --use-anon
+uv run supabomb query --table users --use-anon
 
 # Query and export to file
-supabomb query -t posts -o posts.json
-supabomb query -t comments -o comments.csv -f csv
+uv run supabomb query -t posts -o posts.json
+uv run supabomb query -t comments -o comments.csv -f csv
 
 # Or with explicit credentials
-supabomb query --project-ref abc123xyz --anon-key "eyJ..." --table users
+uv run supabomb query --project-ref abc123xyz --anon-key "eyJ..." --table users
 ```
 
 **Authentication behavior:**
-- By default, uses authenticated session if available (from `supabomb signup`)
+- By default, uses authenticated session if available (from `uv run supabomb signup`)
 - Falls back to anonymous key if no session exists
 - Use `--use-anon` flag to force anonymous query
 
@@ -138,20 +148,20 @@ supabomb query --project-ref abc123xyz --anon-key "eyJ..." --table users
 
 ```bash
 # Uses cached credentials
-supabomb test --output report.json
+uv run supabomb test --output report.json
 
 # Or with explicit credentials
-supabomb test --project-ref abc123xyz --anon-key "eyJ..."
+uv run supabomb test --project-ref abc123xyz --anon-key "eyJ..."
 ```
 
 ### ⚡ Check Edge Functions
 
 ```bash
 # Uses cached credentials
-supabomb check-jwt -e function1 -e function2
+uv run supabomb check-jwt -e function1 -e function2
 
 # Or with explicit credentials
-supabomb check-jwt --project-ref abc123xyz --anon-key "eyJ..." -e function1
+uv run supabomb check-jwt --project-ref abc123xyz --anon-key "eyJ..." -e function1
 ```
 
 ### 👤 User Registration and Authentication
@@ -160,13 +170,13 @@ Register users to test RLS policies with authenticated access:
 
 ```bash
 # Basic signup (generates random email/password)
-supabomb signup
+uv run supabomb signup
 
 # Signup with specific credentials
-supabomb signup -e test@example.com --password MyPass123
+uv run supabomb signup -e test@example.com --password MyPass123
 
 # Automatic email verification (when required)
-supabomb signup --verify-email
+uv run supabomb signup --verify-email
 # This will:
 # 1. Create a temporary email address
 # 2. Register the user
@@ -175,7 +185,7 @@ supabomb signup --verify-email
 # 5. Login and save session to cache
 
 # View full email contents during verification (debugging)
-supabomb signup --verify-email --verbose
+uv run supabomb signup --verify-email --verbose
 # Shows:
 # - Email check attempts
 # - Full HTML and text content
@@ -186,7 +196,7 @@ supabomb signup --verify-email --verbose
 Once registered, authenticated row counts will be shown in `enum` command:
 
 ```bash
-supabomb enum
+uv run supabomb enum
 # Shows both "Anon Rows" and "Auth Rows" columns when session exists
 ```
 
@@ -194,13 +204,13 @@ supabomb enum
 
 ```bash
 # List all cached credentials
-supabomb cached
+uv run supabomb cached
 
 # Remove specific project
-supabomb cached --remove abc123xyz
+uv run supabomb cached --remove abc123xyz
 
 # Clear all cached credentials
-supabomb cached --clear
+uv run supabomb cached --clear
 ```
 
 ## ⚖️ Legal & Ethical Use
