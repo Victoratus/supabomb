@@ -26,7 +26,36 @@ def display_discovery_result(result):
     table.add_row("Anon Key", result.anon_key[:50] + "..." if result.anon_key else "Not found")
     table.add_row("Source", result.source or "N/A")
 
+    # Display edge functions count
+    if result.edge_functions:
+        table.add_row("Edge Functions", f"{len(result.edge_functions)} discovered")
+
     console.print(table)
+
+    # Display edge functions in detail if found
+    if result.edge_functions:
+        console.print("\n[bold]Discovered Edge Functions:[/bold]")
+        edge_table = Table(box=box.ROUNDED)
+        edge_table.add_column("#", style="dim", width=3)
+        edge_table.add_column("Function Name", style="cyan")
+        edge_table.add_column("Arguments", style="yellow")
+        edge_table.add_column("Example", style="green")
+
+        for i, func in enumerate(result.edge_functions, 1):
+            # Format arguments
+            if func.args:
+                args_str = ", ".join(f"{k}={v}" for k, v in func.args.items())
+                if len(args_str) > 40:
+                    args_str = args_str[:40] + "..."
+            else:
+                args_str = func.raw_args[:40] + "..." if func.raw_args and len(func.raw_args) > 40 else (func.raw_args or "N/A")
+
+            # Format example
+            example_str = func.invocation_example[:60] + "..." if func.invocation_example and len(func.invocation_example) > 60 else (func.invocation_example or "N/A")
+
+            edge_table.add_row(str(i), func.name, args_str, example_str)
+
+        console.print(edge_table)
 
 
 def display_enumeration_results(tables, rpc_functions, buckets, auth_counts=None, write_perms=None):

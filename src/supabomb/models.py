@@ -17,6 +17,15 @@ class SupabaseCredentials:
 
 
 @dataclass
+class DiscoveredEdgeFunction:
+    """Edge function discovered from JavaScript code."""
+    name: str
+    args: Optional[Dict[str, Any]] = None
+    raw_args: Optional[str] = None
+    invocation_example: Optional[str] = None
+
+
+@dataclass
 class DiscoveryResult:
     """Result from discovering Supabase in a webapp."""
     found: bool
@@ -24,6 +33,7 @@ class DiscoveryResult:
     anon_key: Optional[str] = None
     url: Optional[str] = None
     source: Optional[str] = None  # Where it was found (js bundle, network, etc.)
+    edge_functions: Optional[List[DiscoveredEdgeFunction]] = None
 
     @property
     def credentials(self) -> Optional[SupabaseCredentials]:

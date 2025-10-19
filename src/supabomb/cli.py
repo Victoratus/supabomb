@@ -45,23 +45,45 @@ def cli():
 @click.option('--file', '-f', help='JavaScript file to analyze')
 @click.option('--har', help='HAR file from network traffic')
 @click.option('--output', '-o', help='Output file for results (JSON)')
-def discover(url, file, har, output):
+@click.option('--katana', is_flag=True, help='Use Katana web crawler to discover all JS files')
+@click.option('--max-js-files', default=50, help='Maximum JS files to analyze with Katana (default: 50)')
+@click.option('--katana-timeout', default=120, help='Katana crawl timeout in seconds (default: 120)')
+@click.option('--verbose', '-v', is_flag=True, help='Show verbose Katana output')
+def discover(url, file, har, output, katana, max_js_files, katana_timeout, verbose):
     """Discover Supabase instances from web sources.
 
     Examples:
 
         supabomb discover --url https://example.com
 
+        supabomb discover --url https://example.com --katana
+
         supabomb discover --file bundle.js
 
         supabomb discover --har network.har
+
+        supabomb discover --url https://example.com --katana --max-js-files 100
     """
     discovery = SupabaseDiscovery()
 
     if url:
-        console.print(f"\n[bold cyan]Analyzing URL:[/bold cyan] {url}")
-        with console.status("[bold green]Scanning for Supabase..."):
-            result = discovery.discover_from_url(url)
+        if katana:
+            # Use Katana for deep crawling
+            console.print(f"\n[bold cyan]Crawling with Katana:[/bold cyan] {url}")
+            console.print(f"[dim]Max JS files: {max_js_files}, Timeout: {katana_timeout}s[/dim]\n")
+
+            with console.status("[bold green]Running Katana crawler..."):
+                result = discovery.discover_with_katana(
+                    url,
+                    max_files=max_js_files,
+                    timeout=katana_timeout,
+                    verbose=verbose
+                )
+        else:
+            # Standard URL analysis
+            console.print(f"\n[bold cyan]Analyzing URL:[/bold cyan] {url}")
+            with console.status("[bold green]Scanning for Supabase..."):
+                result = discovery.discover_from_url(url)
 
         if result.found:
             console.print("[bold green]✓[/bold green] Supabase instance found!")

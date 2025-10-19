@@ -13,6 +13,11 @@ A powerful CLI tool for discovering and pentesting Supabase instances in authori
   - Analyze HTML pages and JavaScript bundles
   - Extract project references and API keys
   - Parse HAR files from network traffic
+  - **Katana Integration**: Deep web crawling for comprehensive discovery
+    - Crawl entire website structure
+    - Discover dynamically loaded JavaScript files
+    - Extract edge function invocations with arguments
+    - Analyze up to 50+ JS files per scan
 
 - **Enumeration**: Discover available resources
   - List all accessible tables and columns
@@ -69,8 +74,17 @@ supabomb query -t users # Query tables
 ### Discover Supabase Instances
 
 ```bash
-# From a web URL
+# From a web URL (standard single-page analysis)
 supabomb discover --url https://example.com
+
+# Deep crawl with Katana (recommended for SPAs and complex sites)
+supabomb discover --url https://example.com --katana
+
+# Katana with custom settings
+supabomb discover --url https://example.com --katana --max-js-files 100 --verbose
+
+# Katana with extended timeout for large sites
+supabomb discover --url https://example.com --katana --katana-timeout 300
 
 # From a JavaScript file
 supabomb discover --file bundle.js
@@ -78,6 +92,13 @@ supabomb discover --file bundle.js
 # From HAR file
 supabomb discover --har network-traffic.har
 ```
+
+**Katana Discovery Benefits:**
+- Discovers ALL JavaScript files, including lazy-loaded and code-split bundles
+- Executes JavaScript to find dynamic routes and imports
+- Filters for target domain + Supabase API calls
+- Aggregates edge functions from multiple sources
+- Provides comprehensive Single Page Application (SPA) coverage
 
 ### Enumerate Resources
 
@@ -196,25 +217,47 @@ Unauthorized access to computer systems is illegal.
 ```
 supabomb/
 ├── src/supabomb/
-│   ├── cli.py           # Click-based CLI
-│   ├── client.py        # Supabase API client
-│   ├── discovery.py     # Web discovery
-│   ├── enumeration.py   # Resource enumeration
-│   ├── testing.py       # Security testing
-│   ├── cache.py         # Credential caching
-│   ├── models.py        # Data models
-│   └── utils.py         # Utilities
-├── .supabomb.json       # Cached credentials (auto-generated)
+│   ├── cli.py                    # Click-based CLI
+│   ├── client.py                 # Supabase API client
+│   ├── discovery.py              # Web discovery & Katana integration
+│   ├── enumeration.py            # Resource enumeration
+│   ├── testing.py                # Security testing
+│   ├── cache.py                  # Credential caching
+│   ├── models.py                 # Data models
+│   ├── katana_integration.py    # Katana web crawler integration
+│   ├── edge_function_parser.py  # Edge function extraction
+│   ├── output_formatting.py     # CLI output formatting
+│   ├── signup_handler.py        # User registration workflow
+│   ├── write_testing.py         # Write permission testing
+│   ├── jwt_utils.py             # JWT token utilities
+│   ├── email_utils.py           # Email verification utilities
+│   ├── url_utils.py             # URL extraction utilities
+│   ├── extraction_utils.py      # Data extraction utilities
+│   └── formatting_utils.py      # Text formatting utilities
+├── .supabomb.json                # Cached credentials (auto-generated)
 └── pyproject.toml
 ```
 
 ## Dependencies
 
+### Python Dependencies
 - click: CLI framework
 - requests: HTTP client
 - beautifulsoup4: HTML parsing
 - rich: Terminal formatting
 - pyjwt: JWT token handling
 - mailtm-python: Temporary email for verification (mail.tm)
+
+### External Tools (Optional)
+- **Katana**: Web crawler for deep JavaScript discovery
+  ```bash
+  # Install using Go
+  go install github.com/projectdiscovery/katana/cmd/katana@latest
+
+  # Verify installation
+  katana -version
+  ```
+
+  **Note**: Katana is optional. If not installed, the `--katana` flag will show a helpful error message with installation instructions.
 
 Made for security researchers, by security researchers.

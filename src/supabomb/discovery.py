@@ -1,12 +1,14 @@
 """Web discovery module for finding Supabase instances."""
 import requests
 from bs4 import BeautifulSoup
-from typing import Optional, List
+from typing import Optional, List, Dict
 import re
-from .models import DiscoveryResult
+from .models import DiscoveryResult, DiscoveredEdgeFunction
 from .url_utils import extract_supabase_url, extract_project_ref
 from .extraction_utils import extract_jwt_from_text
 from .jwt_utils import is_supabase_anon_key
+from .edge_function_parser import extract_edge_functions, extract_edge_function_examples
+from .katana_integration import crawl_and_analyze
 
 
 class SupabaseDiscovery:
@@ -118,10 +120,33 @@ class SupabaseDiscovery:
         Returns:
             DiscoveryResult with findings
         """
+        # Always extract edge functions first (regardless of credentials)
+        edge_functions_data = extract_edge_functions(content)
+        edge_function_examples = dict(extract_edge_function_examples(content))
+
+        # Convert to DiscoveredEdgeFunction objects
+        discovered_edge_functions = []
+        for func_data in edge_functions_data:
+            func_name = func_data['name']
+            discovered_edge_functions.append(
+                DiscoveredEdgeFunction(
+                    name=func_name,
+                    args=func_data.get('args'),
+                    raw_args=func_data.get('raw_args'),
+                    invocation_example=edge_function_examples.get(func_name)
+                )
+            )
+
         # Look for Supabase URL
         supabase_url = extract_supabase_url(content)
 
         if not supabase_url:
+            # No credentials, but may have edge functions
+            if discovered_edge_functions:
+                return DiscoveryResult(
+                    found=False,
+                    edge_functions=discovered_edge_functions
+                )
             return DiscoveryResult(found=False)
 
         project_ref = extract_project_ref(supabase_url)
@@ -164,7 +189,8 @@ class SupabaseDiscovery:
                 project_ref=project_ref,
                 anon_key=anon_key,
                 url=supabase_url,
-                source=source
+                source=source,
+                edge_functions=discovered_edge_functions if discovered_edge_functions else None
             )
 
         # Found URL but no key
@@ -173,7 +199,8 @@ class SupabaseDiscovery:
             project_ref=project_ref,
             anon_key=None,
             url=supabase_url,
-            source=source
+            source=source,
+            edge_functions=discovered_edge_functions if discovered_edge_functions else None
         )
 
     def discover_from_network_traffic(self, har_file: str) -> List[DiscoveryResult]:
@@ -258,4 +285,120 @@ class SupabaseDiscovery:
             return self._analyze_javascript(content, f"file: {file_path}")
 
         except Exception:
+            return DiscoveryResult(found=False)
+
+    def discover_with_katana(self, url: str, max_files: int = 50, timeout: int = 120, verbose: bool = False) -> DiscoveryResult:
+        """Discover Supabase using Katana web crawler.
+
+        This method uses Katana to crawl the website, extract all JavaScript files,
+        and analyze them for Supabase credentials and edge functions.
+
+        Args:
+            url: Target URL to crawl
+            max_files: Maximum number of JS files to download and analyze
+            timeout: Timeout for Katana crawling
+            verbose: Show verbose output
+
+        Returns:
+            Aggregated DiscoveryResult with findings from all JS files
+        """
+        # Use Katana to crawl and download JS files
+        success, js_files, error = crawl_and_analyze(
+            url,
+            max_files=max_files,
+            timeout=timeout,
+            verbose=verbose
+        )
+
+        if not success:
+            return DiscoveryResult(found=False)
+
+        # Analyze all JS files and collect ALL results (including edge functions only)
+        all_results = []
+        for file_url, content in js_files:
+            result = self._analyze_javascript(content, f"Katana: {file_url}")
+            # Include results with credentials OR edge functions
+            if result.found or result.edge_functions:
+                all_results.append(result)
+
+        if not all_results:
+            return DiscoveryResult(found=False)
+
+        # Aggregate results (will combine credentials and edge functions)
+        return self._aggregate_results(all_results, f"Katana crawl of {url}")
+
+    def _aggregate_results(self, results: List[DiscoveryResult], source: str) -> DiscoveryResult:
+        """Aggregate multiple discovery results into one.
+
+        Args:
+            results: List of DiscoveryResult objects
+            source: Description of aggregated source
+
+        Returns:
+            Aggregated DiscoveryResult
+        """
+        if not results:
+            return DiscoveryResult(found=False)
+
+        # Take the first complete result for credentials
+        main_result = None
+        has_credentials = False
+
+        for result in results:
+            if result.project_ref and result.anon_key:
+                main_result = result
+                has_credentials = True
+                break
+
+        # If no complete result, take first with URL
+        if not main_result:
+            for result in results:
+                if result.project_ref:
+                    main_result = result
+                    has_credentials = True
+                    break
+
+        # Aggregate all edge functions (deduplicate by name)
+        all_edge_functions: Dict[str, DiscoveredEdgeFunction] = {}
+
+        for result in results:
+            if result.edge_functions:
+                for func in result.edge_functions:
+                    # Keep the one with most information
+                    if func.name not in all_edge_functions:
+                        all_edge_functions[func.name] = func
+                    else:
+                        existing = all_edge_functions[func.name]
+                        # Update if new one has more info
+                        if func.args and not existing.args:
+                            all_edge_functions[func.name] = func
+                        elif func.invocation_example and not existing.invocation_example:
+                            all_edge_functions[func.name] = func
+
+        # Create aggregated result
+        edge_functions_list = list(all_edge_functions.values()) if all_edge_functions else None
+
+        # Return result based on what we found
+        if has_credentials:
+            # Found credentials (and possibly edge functions)
+            return DiscoveryResult(
+                found=True,
+                project_ref=main_result.project_ref,
+                anon_key=main_result.anon_key,
+                url=main_result.url,
+                source=source,
+                edge_functions=edge_functions_list
+            )
+        elif edge_functions_list:
+            # Only found edge functions, no credentials
+            return DiscoveryResult(
+                found=True,
+                project_ref=None,
+                anon_key=None,
+                url=None,
+                source=source,
+                edge_functions=edge_functions_list
+            )
+        else:
+            # Found nothing
             return DiscoveryResult(found=False)
