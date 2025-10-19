@@ -1,8 +1,10 @@
 # Supabomb
 
+![Supabomb Banner](assets/banner.png)
+
 A powerful CLI tool for discovering and pentesting Supabase instances in authorized security assessments.
 
-## Features
+## ✨ Features
 
 - **Automatic Credential Caching**: Discovered credentials are automatically saved
   - No need to copy/paste project refs and API keys
@@ -44,7 +46,7 @@ A powerful CLI tool for discovering and pentesting Supabase instances in authori
   - Export results in JSON or CSV format
   - Retrieve sample data for analysis
 
-## Installation
+## 📦 Installation
 
 Using uv (recommended):
 
@@ -55,7 +57,7 @@ uv pip install -e .
 uv run supabomb --help
 ```
 
-## Usage
+## 🚀 Usage
 
 ### Quick Workflow
 
@@ -71,7 +73,7 @@ supabomb test           # Run security tests
 supabomb query -t users # Query tables
 ```
 
-### Discover Supabase Instances
+### 🔍 Discover Supabase Instances
 
 ```bash
 # From a web URL (standard single-page analysis)
@@ -100,7 +102,7 @@ supabomb discover --har network-traffic.har
 - Aggregates edge functions from multiple sources
 - Provides comprehensive Single Page Application (SPA) coverage
 
-### Enumerate Resources
+### 📊 Enumerate Resources
 
 ```bash
 # With explicit credentials
@@ -110,7 +112,7 @@ supabomb enum --project-ref abc123xyz --anon-key "eyJ..."
 supabomb enum
 ```
 
-### Query Tables
+### 💾 Query Tables
 
 ```bash
 # Query with authenticated session (default if available)
@@ -132,7 +134,7 @@ supabomb query --project-ref abc123xyz --anon-key "eyJ..." --table users
 - Falls back to anonymous key if no session exists
 - Use `--use-anon` flag to force anonymous query
 
-### Security Testing
+### 🔒 Security Testing
 
 ```bash
 # Uses cached credentials
@@ -142,7 +144,7 @@ supabomb test --output report.json
 supabomb test --project-ref abc123xyz --anon-key "eyJ..."
 ```
 
-### Check Edge Functions
+### ⚡ Check Edge Functions
 
 ```bash
 # Uses cached credentials
@@ -152,7 +154,7 @@ supabomb check-jwt -e function1 -e function2
 supabomb check-jwt --project-ref abc123xyz --anon-key "eyJ..." -e function1
 ```
 
-### User Registration and Authentication
+### 👤 User Registration and Authentication
 
 Register users to test RLS policies with authenticated access:
 
@@ -188,7 +190,7 @@ supabomb enum
 # Shows both "Anon Rows" and "Auth Rows" columns when session exists
 ```
 
-### Manage Cached Credentials
+### 🗂️ Manage Cached Credentials
 
 ```bash
 # List all cached credentials
@@ -201,7 +203,7 @@ supabomb cached --remove abc123xyz
 supabomb cached --clear
 ```
 
-## Legal & Ethical Use
+## ⚖️ Legal & Ethical Use
 
 **WARNING**: This tool is designed for authorized security testing only.
 
@@ -212,7 +214,7 @@ supabomb cached --clear
 
 Unauthorized access to computer systems is illegal.
 
-## Architecture
+## 🏗️ Architecture
 
 ```
 supabomb/
@@ -238,7 +240,7 @@ supabomb/
 └── pyproject.toml
 ```
 
-## Dependencies
+## 📚 Dependencies
 
 ### Python Dependencies
 - click: CLI framework
