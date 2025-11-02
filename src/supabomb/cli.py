@@ -31,13 +31,16 @@ cache = CredentialCache()
 
 @click.group()
 @click.version_option(version="0.1.0")
-def cli():
+@click.option('--json', 'output_json', is_flag=True, help='Output results as JSON instead of formatted tables')
+@click.pass_context
+def cli(ctx, output_json):
     """Supabomb - Supabase Pentesting CLI Tool
 
     A command-line tool for discovering and testing Supabase instances
     in pentesting scenarios.
     """
-    pass
+    ctx.ensure_object(dict)
+    ctx.obj['output_json'] = output_json
 
 
 @cli.command()
@@ -49,7 +52,8 @@ def cli():
 @click.option('--max-js-files', default=50, help='Maximum JS files to analyze with Katana (default: 50)')
 @click.option('--katana-timeout', default=120, help='Katana crawl timeout in seconds (default: 120)')
 @click.option('--verbose', '-v', is_flag=True, help='Show verbose Katana output')
-def discover(url, file, har, output, katana, max_js_files, katana_timeout, verbose):
+@click.pass_context
+def discover(ctx, url, file, har, output, katana, max_js_files, katana_timeout, verbose):
     """Discover Supabase instances from web sources.
 
     Examples:
@@ -85,59 +89,96 @@ def discover(url, file, har, output, katana, max_js_files, katana_timeout, verbo
             with console.status("[bold green]Scanning for Supabase..."):
                 result = discovery.discover_from_url(url)
 
+        json_mode = ctx.obj.get('output_json', False)
+
         if result.found:
-            console.print("[bold green]✓[/bold green] Supabase instance found!")
-            display_discovery_result(result)
+            if not json_mode:
+                console.print("[bold green]✓[/bold green] Supabase instance found!")
+            display_discovery_result(result, json_mode=json_mode)
 
             # Save to cache if we have credentials
             if result.credentials:
                 cache.add_discovery(result.credentials, source=result.source or f"url: {url}")
-                console.print(f"\n[dim]💾 Credentials saved to {cache.cache_file}[/dim]")
+                if not json_mode:
+                    console.print(f"\n[dim]💾 Credentials saved to {cache.cache_file}[/dim]")
 
             if output:
                 save_json(output, result.__dict__)
         else:
-            console.print("[bold red]✗[/bold red] No Supabase instance found")
+            if not json_mode:
+                console.print("[bold red]✗[/bold red] No Supabase instance found")
 
     elif file:
-        console.print(f"\n[bold cyan]Analyzing file:[/bold cyan] {file}")
+        json_mode = ctx.obj.get('output_json', False)
+
+        if not json_mode:
+            console.print(f"\n[bold cyan]Analyzing file:[/bold cyan] {file}")
         result = discovery.discover_from_file(file)
 
         if result.found:
-            console.print("[bold green]✓[/bold green] Supabase instance found!")
-            display_discovery_result(result)
+            if not json_mode:
+                console.print("[bold green]✓[/bold green] Supabase instance found!")
+            display_discovery_result(result, json_mode=json_mode)
 
             # Save to cache if we have credentials
             if result.credentials:
                 cache.add_discovery(result.credentials, source=result.source or f"file: {file}")
-                console.print(f"\n[dim]💾 Credentials saved to {cache.cache_file}[/dim]")
+                if not json_mode:
+                    console.print(f"\n[dim]💾 Credentials saved to {cache.cache_file}[/dim]")
 
             if output:
                 save_json(output, result.__dict__)
         else:
-            console.print("[bold red]✗[/bold red] No Supabase instance found")
+            if not json_mode:
+                console.print("[bold red]✗[/bold red] No Supabase instance found")
 
     elif har:
-        console.print(f"\n[bold cyan]Analyzing HAR file:[/bold cyan] {har}")
+        json_mode = ctx.obj.get('output_json', False)
+
+        if not json_mode:
+            console.print(f"\n[bold cyan]Analyzing HAR file:[/bold cyan] {har}")
         results = discovery.discover_from_network_traffic(har)
 
         if results:
-            console.print(f"[bold green]✓[/bold green] Found {len(results)} Supabase instance(s)!")
-            for i, result in enumerate(results, 1):
-                console.print(f"\n[bold]Instance {i}:[/bold]")
-                display_discovery_result(result)
+            if json_mode:
+                # Output all results as JSON array
+                output_data = []
+                for result in results:
+                    output_data.append({
+                        'project_ref': result.project_ref,
+                        'url': result.url,
+                        'anon_key': result.anon_key,
+                        'source': result.source,
+                        'edge_functions': [
+                            {
+                                'name': func.name,
+                                'args': func.args,
+                                'raw_args': func.raw_args,
+                                'invocation_example': func.invocation_example
+                            }
+                            for func in (result.edge_functions or [])
+                        ]
+                    })
+                print(json.dumps(output_data, indent=2))
+            else:
+                console.print(f"[bold green]✓[/bold green] Found {len(results)} Supabase instance(s)!")
+                for i, result in enumerate(results, 1):
+                    console.print(f"\n[bold]Instance {i}:[/bold]")
+                    display_discovery_result(result, json_mode=False)
 
-                # Save each to cache if we have credentials
+            # Save each to cache if we have credentials
+            for result in results:
                 if result.credentials:
                     cache.add_discovery(result.credentials, source=result.source or f"har: {har}")
 
-            if results and results[0].credentials:
+            if results and results[0].credentials and not json_mode:
                 console.print(f"\n[dim]💾 Credentials saved to {cache.cache_file}[/dim]")
 
             if output:
                 save_json(output, [r.__dict__ for r in results])
         else:
-            console.print("[bold red]✗[/bold red] No Supabase instances found")
+            if not json_mode:
+                console.print("[bold red]✗[/bold red] No Supabase instances found")
 
     else:
         console.print("[bold red]Error:[/bold red] Please specify --url, --file, or --har")
@@ -151,7 +192,8 @@ def discover(url, file, har, output, katana, max_js_files, katana_timeout, verbo
 @click.option('--sample-size', '-s', default=5, help='Number of sample rows per table')
 @click.option('--test-write', is_flag=True, help='Test INSERT/UPDATE/DELETE permissions on tables')
 @click.option('--verbose', '-v', is_flag=True, help='Show detailed email verification debugging information')
-def enum(project_ref, anon_key, output, sample_size, test_write, verbose):
+@click.pass_context
+def enum(ctx, project_ref, anon_key, output, sample_size, test_write, verbose):
     """Enumerate Supabase endpoints, tables, and RPC functions.
 
     Examples:
@@ -353,9 +395,11 @@ def enum(project_ref, anon_key, output, sample_size, test_write, verbose):
             }
 
     # Display results
+    json_mode = ctx.obj.get('output_json', False)
     display_enumeration_results(tables, rpc_functions, buckets,
                                  auth_counts if access_token else None,
-                                 write_perms if test_write else None)
+                                 write_perms if test_write else None,
+                                 json_mode=json_mode)
 
     # Save to file if requested
     if output:
@@ -1166,7 +1210,8 @@ def all(url, project_ref, anon_key, output, test_write, sample_size, katana,
 @click.option('--anon-key', '-k', help='Supabase anonymous API key (optional if cached)')
 @click.option('--edge-functions', '-e', multiple=True, help='Edge function names to test')
 @click.option('--output', '-o', help='Output file for report (JSON)')
-def test(project_ref, anon_key, edge_functions, output):
+@click.pass_context
+def test(ctx, project_ref, anon_key, edge_functions, output):
     """Run security tests on Supabase instance.
 
     Examples:
@@ -1208,7 +1253,8 @@ def test(project_ref, anon_key, edge_functions, output):
     report = tester.generate_report(findings)
 
     # Display results
-    display_test_results(report)
+    json_mode = ctx.obj.get('output_json', False)
+    display_test_results(report, json_mode=json_mode)
 
     # Save to file
     if output:
@@ -1238,7 +1284,8 @@ def test(project_ref, anon_key, edge_functions, output):
 @click.option('--table', '-t', help='Specific table to test (optional, tests all tables if not provided)')
 @click.option('--use-anon', is_flag=True, help='Force anonymous query (ignore authenticated session)')
 @click.option('--verbose', '-v', is_flag=True, help='Show detailed email verification debugging information')
-def test_write(project_ref, anon_key, table, use_anon, verbose):
+@click.pass_context
+def test_write(ctx, project_ref, anon_key, table, use_anon, verbose):
     """Test data manipulation (INSERT/UPDATE/DELETE) permissions on tables.
 
     This command will attempt to:
@@ -1311,15 +1358,22 @@ def test_write(project_ref, anon_key, table, use_anon, verbose):
         console.print("[bold yellow]No tables found[/bold yellow]")
         return
 
-    console.print(f"[bold green]✓[/bold green] Testing {len(tables_to_test)} table(s)\n")
+    json_mode = ctx.obj.get('output_json', False)
 
-    # Results table
-    results_table = Table(title="Write Permission Test Results", box=box.ROUNDED)
-    results_table.add_column("Table", style="cyan")
-    results_table.add_column("INSERT", style="yellow")
-    results_table.add_column("UPDATE", style="blue")
-    results_table.add_column("DELETE", style="magenta")
-    results_table.add_column("Details", style="white")
+    if not json_mode:
+        console.print(f"[bold green]✓[/bold green] Testing {len(tables_to_test)} table(s)\n")
+
+    # Collect results
+    test_results = []
+
+    # Results table (for non-JSON mode)
+    if not json_mode:
+        results_table = Table(title="Write Permission Test Results", box=box.ROUNDED)
+        results_table.add_column("Table", style="cyan")
+        results_table.add_column("INSERT", style="yellow")
+        results_table.add_column("UPDATE", style="blue")
+        results_table.add_column("DELETE", style="magenta")
+        results_table.add_column("Details", style="white")
 
     for table_name in tables_to_test:
         if verbose:
@@ -1512,18 +1566,43 @@ def test_write(project_ref, anon_key, table, use_anon, verbose):
             update_result = "[dim]-[/dim]"
             delete_result = "[dim]-[/dim]"
 
-        results_table.add_row(table_name, insert_result, update_result, delete_result, details)
+        # Collect results
+        # Extract clean status (without markup) for JSON
+        insert_status = "allowed" if "✓" in insert_result else ("possible" if "⚠" in insert_result else "denied")
+        update_status = "allowed" if "✓" in update_result else ("possible" if "⚠" in update_result else ("not_tested" if "-" in update_result else "denied"))
+        delete_status = "allowed" if "✓" in delete_result else ("possible" if "⚠" in delete_result else ("not_tested" if "-" in delete_result else "denied"))
 
-    console.print("\n")
-    console.print(results_table)
-    console.print("\n[dim]Legend: ✓ = Allowed, ✗ = Denied (RLS), ⚠ = Possible with crafted data, - = Not tested[/dim]")
+        test_results.append({
+            'table': table_name,
+            'insert': insert_status,
+            'update': update_status,
+            'delete': delete_status,
+            'details': details
+        })
+
+        if not json_mode:
+            results_table.add_row(table_name, insert_result, update_result, delete_result, details)
+
+    # Output results
+    if json_mode:
+        output = {
+            'auth_mode': auth_mode,
+            'tables_tested': len(tables_to_test),
+            'results': test_results
+        }
+        print(json.dumps(output, indent=2))
+    else:
+        console.print("\n")
+        console.print(results_table)
+        console.print("\n[dim]Legend: ✓ = Allowed, ✗ = Denied (RLS), ⚠ = Possible with crafted data, - = Not tested[/dim]")
 
 
 @cli.command()
 @click.option('--project-ref', '-p', help='Supabase project reference (optional if cached)')
 @click.option('--anon-key', '-k', help='Supabase anonymous API key (optional if cached)')
 @click.option('--edge-functions', '-e', multiple=True, help='Edge function names to check')
-def check_jwt(project_ref, anon_key, edge_functions):
+@click.pass_context
+def check_jwt(ctx, project_ref, anon_key, edge_functions):
     """Check which edge functions require JWT authentication.
 
     Examples:
@@ -1552,28 +1631,45 @@ def check_jwt(project_ref, anon_key, edge_functions):
     with console.status("[bold green]Testing edge functions..."):
         results = enumerator.enumerate_edge_functions(list(edge_functions))
 
+    json_mode = ctx.obj.get('output_json', False)
+
     # Display results
-    table = Table(title="Edge Function JWT Requirements", box=box.ROUNDED)
-    table.add_column("Function Name", style="cyan")
-    table.add_column("Requires JWT", style="yellow")
-    table.add_column("Accessible with Anon Key", style="green")
-    table.add_column("Status Code", style="magenta")
+    if json_mode:
+        output = {
+            'edge_functions': [
+                {
+                    'name': func.name,
+                    'requires_jwt': func.requires_jwt,
+                    'accessible_with_anon': func.accessible_with_anon,
+                    'response_code': func.response_code
+                }
+                for func in results
+            ]
+        }
+        print(json.dumps(output, indent=2))
+    else:
+        table = Table(title="Edge Function JWT Requirements", box=box.ROUNDED)
+        table.add_column("Function Name", style="cyan")
+        table.add_column("Requires JWT", style="yellow")
+        table.add_column("Accessible with Anon Key", style="green")
+        table.add_column("Status Code", style="magenta")
 
-    for func in results:
-        table.add_row(
-            func.name,
-            "Yes" if func.requires_jwt else "No",
-            "Yes" if func.accessible_with_anon else "No",
-            str(func.response_code) if func.response_code else "N/A"
-        )
+        for func in results:
+            table.add_row(
+                func.name,
+                "Yes" if func.requires_jwt else "No",
+                "Yes" if func.accessible_with_anon else "No",
+                str(func.response_code) if func.response_code else "N/A"
+            )
 
-    console.print(table)
+        console.print(table)
 
 
 @cli.command()
 @click.option('--clear', is_flag=True, help='Clear all cached credentials')
 @click.option('--remove', '-r', help='Remove specific project by project-ref')
-def cached(clear, remove):
+@click.pass_context
+def cached(ctx, clear, remove):
     """List and manage cached Supabase credentials.
 
     Examples:
@@ -1605,35 +1701,44 @@ def cached(clear, remove):
         console.print("Run [bold cyan]supabomb discover[/bold cyan] to find Supabase instances")
         return
 
-    console.print(f"\n[bold cyan]Cached Credentials[/bold cyan] ({cache.cache_file})\n")
+    json_mode = ctx.obj.get('output_json', False)
 
-    table = Table(box=box.ROUNDED)
-    table.add_column("#", style="dim", width=3)
-    table.add_column("Project Ref", style="cyan")
-    table.add_column("URL", style="blue")
-    table.add_column("Source", style="yellow")
-    table.add_column("Discovered", style="green")
-    table.add_column("Last Used", style="magenta")
+    if json_mode:
+        output = {
+            'cache_file': str(cache.cache_file),
+            'cached_credentials': discoveries
+        }
+        print(json.dumps(output, indent=2))
+    else:
+        console.print(f"\n[bold cyan]Cached Credentials[/bold cyan] ({cache.cache_file})\n")
 
-    for i, disc in enumerate(discoveries, 1):
-        # Truncate timestamps for display
-        discovered = disc.get("discovered_at", "")[:10]
-        last_used = disc.get("last_used", "")[:10]
+        table = Table(box=box.ROUNDED)
+        table.add_column("#", style="dim", width=3)
+        table.add_column("Project Ref", style="cyan")
+        table.add_column("URL", style="blue")
+        table.add_column("Source", style="yellow")
+        table.add_column("Discovered", style="green")
+        table.add_column("Last Used", style="magenta")
 
-        # Mark the most recently used
-        marker = "→" if i == 1 else ""
+        for i, disc in enumerate(discoveries, 1):
+            # Truncate timestamps for display
+            discovered = disc.get("discovered_at", "")[:10]
+            last_used = disc.get("last_used", "")[:10]
 
-        table.add_row(
-            f"{marker}{i}",
-            disc["project_ref"],
-            disc["url"],
-            disc.get("source", "")[:40],
-            discovered,
-            last_used
-        )
+            # Mark the most recently used
+            marker = "→" if i == 1 else ""
 
-    console.print(table)
-    console.print(f"\n[dim]The most recent (#1) will be used by default[/dim]")
+            table.add_row(
+                f"{marker}{i}",
+                disc["project_ref"],
+                disc["url"],
+                disc.get("source", "")[:40],
+                discovered,
+                last_used
+            )
+
+        console.print(table)
+        console.print(f"\n[dim]The most recent (#1) will be used by default[/dim]")
 
 
 @cli.command()

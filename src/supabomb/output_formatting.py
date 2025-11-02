@@ -11,12 +11,36 @@ from rich import box
 console = Console()
 
 
-def display_discovery_result(result):
+def display_discovery_result(result, json_mode=False):
     """Display discovery result in formatted output.
 
     Args:
         result: DiscoveryResult object
+        json_mode: If True, output as JSON instead of rich tables
     """
+    if json_mode:
+        # Build JSON output
+        output = {
+            'project_ref': result.project_ref,
+            'url': result.url,
+            'anon_key': result.anon_key,
+            'source': result.source,
+            'edge_functions': []
+        }
+
+        if result.edge_functions:
+            for func in result.edge_functions:
+                output['edge_functions'].append({
+                    'name': func.name,
+                    'args': func.args,
+                    'raw_args': func.raw_args,
+                    'invocation_example': func.invocation_example
+                })
+
+        print(json.dumps(output, indent=2))
+        return
+
+    # Original rich table output
     table = Table(show_header=False, box=box.ROUNDED)
     table.add_column("Property", style="cyan")
     table.add_column("Value", style="white")
@@ -58,7 +82,7 @@ def display_discovery_result(result):
         console.print(edge_table)
 
 
-def display_enumeration_results(tables, rpc_functions, buckets, auth_counts=None, write_perms=None):
+def display_enumeration_results(tables, rpc_functions, buckets, auth_counts=None, write_perms=None, json_mode=False):
     """Display enumeration results.
 
     Args:
@@ -67,7 +91,50 @@ def display_enumeration_results(tables, rpc_functions, buckets, auth_counts=None
         buckets: List of storage buckets
         auth_counts: Optional dict of authenticated row counts per table
         write_perms: Optional dict of write permissions (insert/update/delete) per table
+        json_mode: If True, output as JSON instead of rich tables
     """
+    if json_mode:
+        # Build JSON output
+        output = {
+            'tables': [],
+            'rpc_functions': [],
+            'storage_buckets': []
+        }
+
+        for t in tables:
+            table_data = {
+                'name': t.name,
+                'accessible': t.accessible,
+                'columns': t.columns,
+                'column_count': len(t.columns),
+                'anon_row_count': t.row_count
+            }
+
+            if auth_counts is not None:
+                table_data['auth_row_count'] = auth_counts.get(t.name)
+
+            if write_perms is not None and t.name in write_perms:
+                table_data['write_permissions'] = write_perms[t.name]
+
+            output['tables'].append(table_data)
+
+        for f in rpc_functions:
+            output['rpc_functions'].append({
+                'name': f.name,
+                'accessible': f.accessible,
+                'parameters': f.parameters
+            })
+
+        for b in buckets:
+            output['storage_buckets'].append({
+                'name': b['name'],
+                'accessible': b['accessible']
+            })
+
+        print(json.dumps(output, indent=2))
+        return
+
+    # Original rich table output
     console.print("\n[bold]Tables:[/bold]")
     table = Table(box=box.ROUNDED)
     table.add_column("Name", style="cyan")
@@ -162,12 +229,36 @@ def display_enumeration_results(tables, rpc_functions, buckets, auth_counts=None
         console.print(bucket_table)
 
 
-def display_test_results(report):
+def display_test_results(report, json_mode=False):
     """Display test results.
 
     Args:
         report: Test report dictionary
+        json_mode: If True, output as JSON instead of rich tables
     """
+    if json_mode:
+        # Build JSON output
+        output = {
+            'total_findings': report['total_findings'],
+            'risk_score': report['risk_score'],
+            'by_severity': report['by_severity'],
+            'findings': []
+        }
+
+        for finding in report['findings']:
+            output['findings'].append({
+                'severity': finding.severity,
+                'title': finding.title,
+                'description': finding.description,
+                'affected_resource': finding.affected_resource,
+                'recommendation': finding.recommendation,
+                'evidence': finding.evidence
+            })
+
+        print(json.dumps(output, indent=2))
+        return
+
+    # Original rich panel output
     # Summary panel
     summary_text = f"""
 [bold]Total Findings:[/bold] {report['total_findings']}
